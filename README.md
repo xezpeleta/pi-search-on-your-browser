@@ -54,8 +54,12 @@ visit_page({ url: "https://example.com/article" })
 
 ## Requirements
 
-- Google Chrome or Chromium installed
+- **Google Chrome or Chromium** installed (Firefox is not currently supported — see below)
 - Node.js 20+
+
+### Why Chrome only?
+
+Firefox uses the [WebDriver BiDi protocol](https://w3c.github.io/webdriver-bidi) for remote control, not the Chrome DevTools Protocol (CDP). While both use WebSocket, Firefox's BiDi server requires a manual WebSocket handshake with specific header handling (no `Origin` header). Node.js's built-in `WebSocket` doesn't expose custom headers, and adding a full WebSocket library like `ws` would break the zero-dependency constraint of this package. Pull requests welcome if you can solve this without dependencies.
 
 ## Comparison with ds4-agent
 
