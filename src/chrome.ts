@@ -55,6 +55,7 @@ class CDPClient {
   private nextId = 1;
   private pending = new Map<number, PendingCall>();
   private connectPromise: Promise<void> | null = null;
+  private eventHandlers = new Map<string, Array<(params: unknown) => void>>();
 
   async connect(wsUrl: string): Promise<void> {
     this.connectPromise = new Promise((resolve, reject) => {
@@ -72,14 +73,22 @@ class CDPClient {
       };
 
       ws.onmessage = (event) => {
-        let msg: { id?: number; method?: string; result?: unknown; error?: { message: string } };
+        let msg: { id?: number; method?: string; result?: unknown; error?: { message: string }; params?: unknown };
         try {
           msg = JSON.parse(event.data as string);
         } catch {
           return;
         }
-        // Events (no id field) are ignored
-        if (msg.id === undefined || msg.id === null) return;
+        // Events (no id field) — dispatch to handlers
+        if (msg.id === undefined || msg.id === null) {
+          if (msg.method) {
+            const handlers = this.eventHandlers.get(msg.method);
+            if (handlers) {
+              for (const h of handlers) h(msg.params);
+            }
+          }
+          return;
+        }
         const cb = this.pending.get(msg.id);
         if (!cb) return;
         this.pending.delete(msg.id);
@@ -96,6 +105,12 @@ class CDPClient {
       };
     });
     await this.connectPromise;
+  }
+
+  onEvent(method: string, handler: (params: unknown) => void) {
+    const handlers = this.eventHandlers.get(method) || [];
+    handlers.push(handler);
+    this.eventHandlers.set(method, handlers);
   }
 
   async call(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
@@ -318,7 +333,6 @@ async function runInPage(
   await ensureChrome();
 
   const tab = await openTab();
-  onStatus(`Opened tab for ${url}`);
 
   const cdp = new CDPClient();
   await cdp.connect(tab.wsUrl);
@@ -328,46 +342,41 @@ async function runInPage(
     await cdp.call("Page.enable");
     await cdp.call("Runtime.enable");
 
-    // Navigate
+    // Navigate and wait for load event (event-driven, no polling)
+    const loaded = new Promise<void>((resolve) => {
+      cdp.onEvent("Page.loadEventFired", () => resolve());
+    });
+    const loadTimeout = new Promise<void>((resolve) => setTimeout(resolve, 10_000));
+
+    onStatus(`Navigating to ${url}`);
     await cdp.call("Page.navigate", { url });
 
-    // Wait for page load
-    for (let i = 0; i < 80; i++) {
-      await sleep(250);
-      try {
-        const state = await cdp.evaluate("document.readyState");
-        if (state === "complete") break;
-      } catch {
-        // page not ready yet
-      }
-    }
-    await sleep(500);
+    // Wait for load event or timeout
+    await Promise.race([loaded, loadTimeout]);
 
     // Handle consent
     if (clickConsent) {
       const clicked = await cdp.evaluate(GOOGLE_CONSENT_JS);
       if (clicked) {
         onStatus(`Consent: ${clicked}`);
-        await sleep(1500);
-        for (let i = 0; i < 40; i++) {
-          await sleep(250);
-          try {
-            const state = await cdp.evaluate("document.readyState");
-            if (state === "complete") break;
-          } catch { /* */ }
-        }
+        // Brief wait after consent click, with a shorter page-ready check
+        const consentLoaded = new Promise<void>((resolve) => {
+          cdp.onEvent("Page.loadEventFired", () => resolve());
+        });
+        const consentTimeout = new Promise<void>((resolve) => setTimeout(resolve, 5_000));
+        await Promise.race([consentLoaded, consentTimeout]);
       }
     }
 
     // Scroll for dynamic pages
     if (dynamicScroll) {
-      onStatus("Scrolling page for dynamic content...");
-      for (let i = 0; i < 5; i++) {
+      onStatus("Scrolling for dynamic content...");
+      for (let i = 0; i < 3; i++) {
         await cdp.evaluate("window.scrollTo(0, document.body.scrollHeight)");
-        await sleep(500);
+        await sleep(300);
       }
       await cdp.evaluate("window.scrollTo(0, 0)");
-      await sleep(500);
+      await sleep(200);
     }
 
     // Extract
