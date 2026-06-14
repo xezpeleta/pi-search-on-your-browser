@@ -1,6 +1,6 @@
 {
   "name": "pi-search-on-your-browser",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Search Google in your own visible Chrome — same approach as @antirez's ds4-agent. Zero dependencies, no API keys.",
   "type": "module",
   "keywords": ["pi-package", "search", "google", "chrome", "cdp", "browser", "ds4-agent"],
