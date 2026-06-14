@@ -337,29 +337,24 @@ async function runInPage(
   const cdp = new CDPClient();
   await cdp.connect(tab.wsUrl);
 
+  onStatus(`Navigating to ${new URL(url).hostname}...`);
+
   try {
-    // Enable domains
     await cdp.call("Page.enable");
     await cdp.call("Runtime.enable");
 
-    // Navigate and wait for load event (event-driven, no polling)
     const loaded = new Promise<void>((resolve) => {
       cdp.onEvent("Page.loadEventFired", () => resolve());
     });
     const loadTimeout = new Promise<void>((resolve) => setTimeout(resolve, 10_000));
 
-    onStatus(`Navigating to ${url}`);
     await cdp.call("Page.navigate", { url });
-
-    // Wait for load event or timeout
     await Promise.race([loaded, loadTimeout]);
 
-    // Handle consent
     if (clickConsent) {
       const clicked = await cdp.evaluate(GOOGLE_CONSENT_JS);
       if (clicked) {
         onStatus(`Consent: ${clicked}`);
-        // Brief wait after consent click, with a shorter page-ready check
         const consentLoaded = new Promise<void>((resolve) => {
           cdp.onEvent("Page.loadEventFired", () => resolve());
         });
@@ -368,7 +363,6 @@ async function runInPage(
       }
     }
 
-    // Scroll for dynamic pages
     if (dynamicScroll) {
       onStatus("Scrolling for dynamic content...");
       for (let i = 0; i < 3; i++) {
@@ -379,7 +373,6 @@ async function runInPage(
       await sleep(200);
     }
 
-    // Extract
     onStatus("Extracting content...");
     const result = await cdp.evaluate(js);
 
