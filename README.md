@@ -21,13 +21,13 @@ This means you're authenticated everywhere — paywalled sites, Twitter, GitHub,
 ## Install
 
 ```bash
-pi install /path/to/pi-search-on-your-browser
+pi install npm:pi-search-on-your-browser
 ```
 
-Or from git (once published):
+Or from git:
 
 ```bash
-pi install git:github.com/xezpeleta/pi-search-on-your-browser
+pi install git:github.com/xezpeleta/pi-search-on-your-browser@v0.1.0
 ```
 
 ## Tools
