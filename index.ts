@@ -19,9 +19,18 @@
  * ~/.pi-search-browser/ — cookies and sessions persist across calls.
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ToolResult } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { googleSearch, visitPage, shutdownChrome } from "./src/chrome.js";
+
+type RenderArgs = { query?: string; url?: string };
+type RenderState = { expanded?: boolean; isPartial?: boolean };
+type ToolTheme = {
+  fg: (color: string, text: string) => string;
+  bold: (text: string) => string;
+  dim: (text: string) => string;
+};
 
 export default function searchOnYourBrowser(pi: ExtensionAPI) {
   // ── google_search tool ───────────────────────────────────────────────────
@@ -38,7 +47,7 @@ export default function searchOnYourBrowser(pi: ExtensionAPI) {
     parameters: Type.Object({
       query: Type.String({ description: "Search query to send to Google" }),
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params, _signal, onUpdate) {
       const { query } = params;
       if (!query || !query.trim()) {
         return {
@@ -48,18 +57,52 @@ export default function searchOnYourBrowser(pi: ExtensionAPI) {
       }
 
       try {
-        const result = await googleSearch(query.trim());
+        const started = Date.now();
+        const result = await googleSearch(query.trim(), (msg) => {
+          onUpdate?.({
+            content: [{ type: "text", text: msg }],
+            details: { _progress: true },
+          });
+        });
+        const elapsed = ((Date.now() - started) / 1000).toFixed(1);
+
         return {
           content: [{ type: "text" as const, text: result.markdown }],
-          details: {},
+          details: { url: result.url, elapsed: `${elapsed}s`, chars: result.markdown.length },
         };
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
-        return {
-          content: [{ type: "text" as const, text: `Tool error: google_search failed: ${message}` }],
-          details: {},
-        };
+        throw new Error(`google_search failed: ${message}`);
       }
+    },
+
+    renderCall(args: Partial<RenderArgs>, theme: ToolTheme) {
+      const q = (args.query || "").slice(0, 60);
+      const trunc = q.length < (args.query || "").length ? "..." : "";
+      return new Text(
+        `${theme.fg("toolTitle", theme.bold("google_search"))} "${theme.fg("accent", q + trunc)}"`,
+        0,
+        0,
+      );
+    },
+
+    renderResult(result: ToolResult, { expanded, isPartial }: RenderState, theme: ToolTheme) {
+      if (isPartial) {
+        const progress = result.content.find((c) => c.type === "text")?.text ?? "Searching...";
+        return new Text(theme.fg("warning", progress), 0, 0);
+      }
+
+      const details = result.details as { url?: string; elapsed?: string; chars?: number } | undefined;
+      if (!expanded) {
+        const parts: string[] = [];
+        if (details?.chars) parts.push(`${details.chars.toLocaleString()} chars`);
+        if (details?.elapsed) parts.push(details.elapsed);
+        if (details?.url) parts.push(new URL(details.url).hostname);
+        return new Text(theme.fg("muted", ` → ${parts.join(" · ")}`), 0, 0);
+      }
+
+      const text = result.content.find((c) => c.type === "text")?.text ?? "";
+      return new Text(`\n${text.split("\n").map((l) => theme.fg("toolOutput", l)).join("\n")}`, 0, 0);
     },
   });
 
@@ -77,7 +120,7 @@ export default function searchOnYourBrowser(pi: ExtensionAPI) {
     parameters: Type.Object({
       url: Type.String({ description: "Full URL to visit" }),
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params, _signal, onUpdate) {
       const { url } = params;
       if (!url || !url.trim()) {
         return {
@@ -86,11 +129,9 @@ export default function searchOnYourBrowser(pi: ExtensionAPI) {
         };
       }
 
-      // Basic URL validation
       let targetUrl: string;
       try {
-        const parsed = new URL(url.trim());
-        targetUrl = parsed.toString();
+        targetUrl = new URL(url.trim()).toString();
       } catch {
         return {
           content: [{ type: "text" as const, text: `Tool error: visit_page: invalid URL: ${url}` }],
@@ -99,18 +140,54 @@ export default function searchOnYourBrowser(pi: ExtensionAPI) {
       }
 
       try {
-        const result = await visitPage(targetUrl);
+        const started = Date.now();
+        const result = await visitPage(targetUrl, (msg) => {
+          onUpdate?.({
+            content: [{ type: "text", text: msg }],
+            details: { _progress: true },
+          });
+        });
+        const elapsed = ((Date.now() - started) / 1000).toFixed(1);
+
         return {
           content: [{ type: "text" as const, text: result.markdown }],
-          details: {},
+          details: { url: result.url, elapsed: `${elapsed}s`, chars: result.markdown.length },
         };
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
-        return {
-          content: [{ type: "text" as const, text: `Tool error: visit_page failed: ${message}` }],
-          details: {},
-        };
+        throw new Error(`visit_page failed: ${message}`);
       }
+    },
+
+    renderCall(args: Partial<RenderArgs>, theme: ToolTheme) {
+      const u = args.url || "";
+      const hostname = (() => { try { return new URL(u).hostname; } catch { return u; } })();
+      return new Text(
+        `${theme.fg("toolTitle", theme.bold("visit_page"))} ${theme.fg("accent", hostname)}`,
+        0,
+        0,
+      );
+    },
+
+    renderResult(result: ToolResult, { expanded, isPartial }: RenderState, theme: ToolTheme) {
+      if (isPartial) {
+        const progress = result.content.find((c) => c.type === "text")?.text ?? "Loading...";
+        return new Text(theme.fg("warning", progress), 0, 0);
+      }
+
+      const details = result.details as { url?: string; elapsed?: string; chars?: number } | undefined;
+      if (!expanded) {
+        const parts: string[] = [];
+        if (details?.chars) parts.push(`${details.chars.toLocaleString()} chars`);
+        if (details?.elapsed) parts.push(details.elapsed);
+        if (details?.url) {
+          try { parts.push(new URL(details.url).hostname); } catch { /* */ }
+        }
+        return new Text(theme.fg("muted", ` → ${parts.join(" · ")}`), 0, 0);
+      }
+
+      const text = result.content.find((c) => c.type === "text")?.text ?? "";
+      return new Text(`\n${text.split("\n").map((l) => theme.fg("toolOutput", l)).join("\n")}`, 0, 0);
     },
   });
 
@@ -122,21 +199,5 @@ export default function searchOnYourBrowser(pi: ExtensionAPI) {
       shutdownChrome();
       ctx.ui.notify("Google Search Chrome killed.", "info");
     },
-  });
-
-  // ── Startup notification ─────────────────────────────────────────────────
-
-  pi.on("session_start", async (_event, ctx) => {
-    ctx.ui.notify(
-      "pi-search-on-your-browser loaded — /google-search-kill to stop Chrome",
-      "info"
-    );
-  });
-
-  // ── Cleanup on shutdown ──────────────────────────────────────────────────
-
-  pi.on("session_shutdown", async () => {
-    // Don't kill Chrome — keep it alive for faster subsequent calls (like ds4-agent)
-    // User can manually kill with /google-search-kill
   });
 }
