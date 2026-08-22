@@ -261,11 +261,15 @@ async function closeTab(targetId: string): Promise<void> {
 // Backtick constant for building JS strings that contain backticks
 const BT = "`";
 
+// NOTE: deliberately does NOT match <a> tags. Clicking an anchor navigates
+// away from the target page. Cookie-consent "accept" buttons are always
+// <button>/<input>/[role=button], never <a>. Patterns are anchored (^...$)
+// so e.g. /^agree$/i does not match "Service Level Agreement" in a footer.
 const GOOGLE_CONSENT_JS =
   "(() => {" +
   'const clean=s=>(s||"").replace(/\\s+/g," ").trim();' +
-  "const pats=[/accept all/i,/i agree/i,/agree/i,/accetta tutto/i,/tout accepter/i,/aceptar todo/i,/alle akzeptieren/i];" +
-  'const els=[...document.querySelectorAll("button,[role=button],input[type=submit],a")];' +
+  "const pats=[/^accept all$/i,/^accept$/i,/^i agree$/i,/^agree$/i,/^allow all$/i,/^got it$/i,/^accetta tutto$/i,/^tout accepter$/i,/^aceptar todo$/i,/^alle akzeptieren$/i];" +
+  'const els=[...document.querySelectorAll("button,[role=button],input[type=submit]")];' +
   "for(const el of els){const t=clean(el.innerText||el.value||el.textContent);" +
   "if(!t)continue;if(pats.some(p=>p.test(t))){el.click();return'clicked '+t;}}" +
   'return"";' +

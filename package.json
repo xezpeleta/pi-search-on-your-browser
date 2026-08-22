@@ -1,9 +1,19 @@
 {
   "name": "pi-search-on-your-browser",
-  "version": "0.3.0",
-  "description": "Search Google and read X (Twitter) in your own visible Chrome — same approach as @antirez's ds4-agent. Zero dependencies, no API keys.",
+  "version": "0.3.1",
+  "description": "Search Google and read X (Twitter) in your own visible Chrome \u2014 same approach as @antirez's ds4-agent. Zero dependencies, no API keys.",
   "type": "module",
-  "keywords": ["pi-package", "search", "google", "chrome", "cdp", "browser", "ds4-agent", "twitter", "x"],
+  "keywords": [
+    "pi-package",
+    "search",
+    "google",
+    "chrome",
+    "cdp",
+    "browser",
+    "ds4-agent",
+    "twitter",
+    "x"
+  ],
   "author": "xezpeleta",
   "license": "MIT",
   "engines": {
@@ -15,7 +25,9 @@
     "README.md"
   ],
   "pi": {
-    "extensions": ["./index.ts"]
+    "extensions": [
+      "./index.ts"
+    ]
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"
