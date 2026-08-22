@@ -503,6 +503,155 @@ const REDDIT_EXTRACT_JS = `(async () => {
   return lines.join("\\n");
 })()`;
 
+// ── Amazon extractor ─────────────────────────────────────────────────────
+// Amazon product pages are extremely noisy: the generic extractor pulls
+// ~110KB of nav, keyboard-shortcut help, and category links before reaching
+// the actual product data (and truncates at 90KB, often losing specs). This
+// dedicated extractor pulls structured fields (title, price, availability,
+// brand, rating, bullets, tech specs, ASIN) into ~2-3KB of clean markdown.
+// Reviews are lazy-loaded near the bottom, so this is async and self-scrolls
+// a few times to try to capture a few top reviews (best-effort).
+const AMAZON_PRODUCT_JS = `(async () => {
+  const clean = s => (s||"").replace(/\\s+/g, " ").trim();
+  const txt = sel => { const el = document.querySelector(sel); return el ? clean(el.innerText) : null; };
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+  const title = txt("#productTitle") || txt("#titleSection");
+  const price = txt("#corePrice_feature_div .a-offscreen") || txt(".a-price .a-offscreen");
+  const listPrice = txt("#corePrice_feature_div .a-text-price .a-offscreen") || txt(".a-price.a-text-price .a-offscreen");
+  const availability = txt("#availability span") || txt("#availability");
+  let brand = txt("#bylineInfo") || "";
+  brand = brand.replace(/^Brand:\\s*/i, "").replace(/\\s*Visit the .* Store$/i, "").trim();
+  const rating = txt('span[data-hook="rating-out-of-text"]') || txt(".a-icon-star .a-icon-alt");
+  let reviewCount = txt("#acrCustomerReviewText") || "";
+  reviewCount = reviewCount.replace(/[()]/g, "").trim();
+  const asinM = location.pathname.match(/\\/dp\\/([A-Z0-9]{10})/);
+  const asin = asinM ? asinM[1] : null;
+
+  // Feature bullets — deduped (Amazon sometimes repeats them)
+  const bset = new Set(); const bullets = [];
+  for (const el of document.querySelectorAll("#feature-bullets ul li span.a-list-item")) {
+    const t = clean(el.innerText); if (!t || bset.has(t)) continue; bset.add(t); bullets.push(t);
+  }
+  // Tech specs — prefer the table, fall back to detail bullets
+  const specs = []; const sset = new Set();
+  for (const tr of document.querySelectorAll("#productDetails_techSpec_section_1 tr, #techSpecTable tr")) {
+    const th = tr.querySelector("th"); const td = tr.querySelector("td");
+    if (th && td) { const s = clean(th.innerText) + " :: " + clean(td.innerText); if (!sset.has(s)) { sset.add(s); specs.push(s); } }
+  }
+  if (specs.length === 0) {
+    for (const li of document.querySelectorAll("#detailBulletsWrapper_feature_div li")) {
+      const s = clean(li.innerText); if (!sset.has(s)) { sset.add(s); specs.push(s); }
+    }
+  }
+  const description = txt("#productDescription");
+
+  // Reviews are lazy-loaded near the bottom — best-effort scroll to find a few
+  let reviews = [];
+  for (let i = 0; i < 4; i++) {
+    const els = [...document.querySelectorAll('[data-hook="review-body"] span')];
+    if (els.length > 0) { reviews = els.slice(0, 5).map(el => clean(el.innerText).slice(0, 400)); break; }
+    window.scrollBy(0, Math.round(window.innerHeight * 1.5));
+    await sleep(700);
+  }
+  window.scrollTo(0, 0);
+
+  // CAPTCHA / bot-check guard: if no title and no ASIN, the page is likely a
+  // "Enter the characters you see below" interstitial.
+  if (!title && !asin) {
+    const cap = ["# Amazon (no product data found)", "", "URL: " + location.href, "", "_The page may be a CAPTCHA / bot-check interstitial, or the product is no longer available._"];
+    return cap.join("\\n");
+  }
+
+  const lines = [];
+  lines.push("# " + (title || "Amazon product"));
+  lines.push("");
+  lines.push("URL: " + location.href);
+  if (asin) lines.push("ASIN: " + asin);
+  lines.push("");
+  const meta = [];
+  if (price) meta.push("Price: " + price);
+  if (listPrice) meta.push("List price: " + listPrice);
+  if (availability) meta.push("Availability: " + availability);
+  if (brand) meta.push("Brand: " + brand);
+  if (rating) meta.push("Rating: " + rating + (reviewCount ? " (" + reviewCount + " reviews)" : ""));
+  for (const m of meta) lines.push("- " + m);
+  if (bullets.length) {
+    lines.push("");
+    lines.push("## About this item");
+    for (const b of bullets) lines.push("- " + b);
+  }
+  if (specs.length) {
+    lines.push("");
+    lines.push("## Technical specifications");
+    for (const s of specs) lines.push("- " + s);
+  }
+  if (description) {
+    lines.push("");
+    lines.push("## Description");
+    lines.push(description);
+  }
+  if (reviews.length) {
+    lines.push("");
+    lines.push("## Top reviews");
+    for (const r of reviews) lines.push("> " + r.replace(/\\n/g, " "));
+  }
+  return lines.join("\\n");
+})()`;
+
+// Amazon search results (/s?k=...). Each result is a card with
+// data-component-type="s-search-result" and data-asin. Results are paginated
+// via infinite scroll, so this is async + self-scrolling and dedupes by ASIN,
+// like the X/Reddit extractors.
+const AMAZON_SEARCH_JS = `(async () => {
+  const clean = s => (s||"").replace(/\\s+/g, " ").trim();
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const visible = el => { const r = el.getBoundingClientRect(); const st = getComputedStyle(el); return r.width > 0 && r.height > 0 && st.display !== "none" && st.visibility !== "hidden"; };
+
+  const seen = new Map();
+  let stale = 0;
+  for (let i = 0; i < 10; i++) {
+    let added = 0;
+    for (const c of document.querySelectorAll('[data-component-type="s-search-result"]')) {
+      if (!visible(c)) continue;
+      const asin = c.getAttribute("data-asin");
+      if (!asin || seen.has(asin)) continue;
+      const h2 = c.querySelector("h2");
+      const title = h2 ? clean(h2.innerText) : null;
+      const priceEl = c.querySelector(".a-price .a-offscreen");
+      const price = priceEl ? clean(priceEl.innerText) : null;
+      let rating = null;
+      for (const ia of c.querySelectorAll(".a-icon-alt")) {
+        const t = clean(ia.innerText); if (/out of 5/i.test(t)) { rating = t; break; }
+      }
+      const sponsored = !!c.querySelector(".puis-label-popover-default, [aria-label*='Sponsored' i]");
+      if (!title && !price) continue;
+      seen.set(asin, { title: title ? title.slice(0, 220) : null, price, rating, sponsored, url: "https://" + location.host + "/dp/" + asin });
+      added++;
+    }
+    if (seen.size >= 40) break;
+    if (added === 0) { stale++; if (stale >= 2) break; } else { stale = 0; }
+    window.scrollBy(0, Math.round(window.innerHeight * 1.5));
+    await sleep(700);
+  }
+  window.scrollTo(0, 0);
+
+  const query = new URLSearchParams(location.search).get("k") || clean(document.title).replace(/\\s*[|:]\\s*Amazon.*$/i, "");
+  const lines = ["# Amazon search: " + (query || "(no query)"), "", "URL: " + location.href, "", "## Results (" + seen.size + ")", ""];
+  if (seen.size === 0) {
+    lines.push("_No results found or extracted. The page may be a CAPTCHA / bot-check interstitial._");
+    return lines.join("\\n");
+  }
+  for (const r of seen.values()) {
+    const parts = [];
+    if (r.price) parts.push(r.price);
+    if (r.rating) parts.push(r.rating);
+    lines.push("- **" + (r.title || "(no title)") + (r.sponsored ? " [Sponsored]" : "") + "**" + (parts.length ? " — " + parts.join(" | ") : ""));
+    lines.push("  " + r.url);
+  }
+  return lines.join("\\n");
+})()`;
+
 function isXUrl(url: string): boolean {
   try {
     const host = new URL(url).hostname.toLowerCase();
@@ -520,6 +669,28 @@ function isRedditPostUrl(url: string): boolean {
     const isReddit = host === "reddit.com" || host.endsWith(".reddit.com");
     // Only post/comment pages — listings and user pages use the generic extractor.
     return isReddit && u.pathname.includes("/comments/");
+  } catch {
+    return false;
+  }
+}
+
+function isAmazonProductUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    if (!/(^|\.)amazon\./.test(u.hostname.toLowerCase())) return false;
+    // /dp/ASIN, /gp/product/ASIN, /gp/aw/d/ASIN
+    return /\/(dp|gp\/product|gp\/aw\/d)\/[A-Z0-9]{10}/.test(u.pathname);
+  } catch {
+    return false;
+  }
+}
+
+function isAmazonSearchUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    if (!/(^|\.)amazon\./.test(u.hostname.toLowerCase())) return false;
+    // Amazon search: /s?k=... (also /s/ on some locales)
+    return (u.pathname === "/s" || u.pathname.startsWith("/s/")) && u.searchParams.has("k");
   } catch {
     return false;
   }
@@ -683,6 +854,36 @@ export async function visitPage(
       dynamicScroll: false,
       initialWaitMs: 500,
       waitForSelector: 'shreddit-comment, shreddit-post',
+      waitForTimeoutMs: 10_000,
+      onStatus: status,
+    });
+    return { markdown, url };
+  }
+
+  if (isAmazonProductUrl(url)) {
+    status("Detected Amazon product page — using product extractor...");
+    const markdown = await runInPage({
+      url,
+      js: AMAZON_PRODUCT_JS,
+      clickConsent: false,
+      dynamicScroll: false,
+      initialWaitMs: 500,
+      waitForSelector: "#productTitle, #titleSection",
+      waitForTimeoutMs: 10_000,
+      onStatus: status,
+    });
+    return { markdown, url };
+  }
+
+  if (isAmazonSearchUrl(url)) {
+    status("Detected Amazon search — using listing extractor...");
+    const markdown = await runInPage({
+      url,
+      js: AMAZON_SEARCH_JS,
+      clickConsent: false,
+      dynamicScroll: false,
+      initialWaitMs: 500,
+      waitForSelector: '[data-component-type="s-search-result"]',
       waitForTimeoutMs: 10_000,
       onStatus: status,
     });

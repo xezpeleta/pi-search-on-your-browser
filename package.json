@@ -1,7 +1,7 @@
 {
   "name": "pi-search-on-your-browser",
-  "version": "0.3.1",
-  "description": "Search Google and read X (Twitter) in your own visible Chrome \u2014 same approach as @antirez's ds4-agent. Zero dependencies, no API keys.",
+  "version": "0.4.0",
+  "description": "Search Google and read X (Twitter), Reddit, and Amazon in your own visible Chrome \u2014 same approach as @antirez's ds4-agent. Zero dependencies, no API keys.",
   "type": "module",
   "keywords": [
     "pi-package",
@@ -12,7 +12,9 @@
     "browser",
     "ds4-agent",
     "twitter",
-    "x"
+    "x",
+    "amazon",
+    "reddit"
   ],
   "author": "xezpeleta",
   "license": "MIT",

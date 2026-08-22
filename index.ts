@@ -13,6 +13,7 @@
  *   - visit_page      — Visit a URL in a visible Chrome browser, returns rendered page as markdown.
  *                       X (Twitter) URLs get a dedicated tweet extractor (search/profile/tweet).
  *                       Reddit post URLs get a dedicated comment extractor (post + threaded comments).
+ *                       Amazon product & search URLs get a dedicated product/listing extractor.
  *
  * Registered commands:
  *   - /google-search-kill  — Kill the Chrome process
@@ -114,12 +115,13 @@ export default function searchOnYourBrowser(pi: ExtensionAPI) {
     name: "visit_page",
     label: "Visit Page",
     description:
-      "Open a URL in your visible Chrome browser and return the rendered page as Markdown. Works with authenticated sites, paywalls, and JavaScript-heavy pages. X (Twitter) URLs (search, profile, or tweet) are extracted as structured tweets with handle, timestamp, permalink, and engagement. Reddit post URLs are extracted as the post plus threaded comments with author, score, and OP marking.",
-    promptSnippet: "visit_page: visit a URL in your visible browser, returns rendered markdown (X/Twitter URLs yield structured tweets; Reddit posts yield post + threaded comments)",
+      "Open a URL in your visible Chrome browser and return the rendered page as Markdown. Works with authenticated sites, paywalls, and JavaScript-heavy pages. X (Twitter) URLs (search, profile, or tweet) are extracted as structured tweets with handle, timestamp, permalink, and engagement. Reddit post URLs are extracted as the post plus threaded comments with author, score, and OP marking. Amazon product pages are extracted as structured product data (title, price, availability, brand, rating, features, tech specs, ASIN) and Amazon search URLs as a clean product listing.",
+    promptSnippet: "visit_page: visit a URL in your visible browser, returns rendered markdown (X/Twitter URLs yield structured tweets; Reddit posts yield post + threaded comments; Amazon products yield structured product data)",
     promptGuidelines: [
       "Use visit_page to read a web page you found via google_search. It opens in your visible Chrome so authenticated/paywalled sites work.",
       "For X (Twitter) URLs — search results, profiles, or individual tweets — visit_page extracts structured tweets (handle, text, timestamp, permalink, engagement). Search X by visiting https://x.com/search?q=<query>&f=top (or &f=live for latest).",
       "For Reddit post URLs (any reddit.com .../comments/... link) visit_page extracts the post (title, author, score, body) plus threaded comments (author, score, OP marking, depth-indented replies). Subreddit listings and user pages use the generic extractor.",
+      "For Amazon product pages (any amazon.* /dp/ASIN, /gp/product/ASIN URL) visit_page extracts structured product data: title, price, list price, availability, brand, rating, review count, feature bullets, technical specifications, and ASIN. For Amazon search URLs (amazon.* /s?k=...) it returns a clean listing of products with title, price, rating, ASIN, and link. Other Amazon pages (category, seller, etc.) use the generic extractor.",
     ],
     parameters: Type.Object({
       url: Type.String({ description: "Full URL to visit" }),

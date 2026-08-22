@@ -71,6 +71,22 @@ through to the generic extractor.
 visit_page({ url: "https://www.reddit.com/r/programming/comments/.../" })
 ```
 
+**Amazon support:** Any `amazon.*` product page (`/dp/ASIN`, `/gp/product/ASIN`)
+or search page (`/s?k=...`) gets a dedicated extractor. Product pages return
+structured data — title, price, list price, availability, brand, rating,
+review count, feature bullets, technical specifications, ASIN, and top reviews
+(best-effort) — instead of the ~110 KB of navigation noise the generic
+extractor would pull. Search pages return a clean listing of products with
+title, price, rating, ASIN, and link, scrolling to collect more results.
+
+```
+visit_page({ url: "https://www.amazon.es/s?k=E220-900T22D" })                       // search
+visit_page({ url: "https://www.amazon.es/-/en/.../dp/B097GZBZ9Y" })                  // product
+```
+
+Other Amazon pages (category, seller, etc.) fall through to the generic
+extractor.
+
 ## Commands
 
 - `/google-search-kill` — Kill the Chrome browser
