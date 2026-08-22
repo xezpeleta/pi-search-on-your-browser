@@ -10,7 +10,8 @@
  *
  * Registered tools:
  *   - google_search   — Search Google in a visible Chrome browser, returns markdown links + snippet
- *   - visit_page      — Visit a URL in a visible Chrome browser, returns rendered page as markdown
+ *   - visit_page      — Visit a URL in a visible Chrome browser, returns rendered page as markdown.
+ *                       X (Twitter) URLs get a dedicated tweet extractor (search/profile/tweet).
  *
  * Registered commands:
  *   - /google-search-kill  — Kill the Chrome process
@@ -112,10 +113,11 @@ export default function searchOnYourBrowser(pi: ExtensionAPI) {
     name: "visit_page",
     label: "Visit Page",
     description:
-      "Open a URL in your visible Chrome browser and return the rendered page as Markdown. Works with authenticated sites, paywalls, and JavaScript-heavy pages.",
-    promptSnippet: "visit_page: visit a URL in your visible browser, returns rendered markdown",
+      "Open a URL in your visible Chrome browser and return the rendered page as Markdown. Works with authenticated sites, paywalls, and JavaScript-heavy pages. X (Twitter) URLs (search, profile, or tweet) are extracted as structured tweets with handle, timestamp, permalink, and engagement.",
+    promptSnippet: "visit_page: visit a URL in your visible browser, returns rendered markdown (X/Twitter URLs yield structured tweets)",
     promptGuidelines: [
       "Use visit_page to read a web page you found via google_search. It opens in your visible Chrome so authenticated/paywalled sites work.",
+      "For X (Twitter) URLs — search results, profiles, or individual tweets — visit_page extracts structured tweets (handle, text, timestamp, permalink, engagement). Search X by visiting https://x.com/search?q=<query>&f=top (or &f=live for latest).",
     ],
     parameters: Type.Object({
       url: Type.String({ description: "Full URL to visit" }),

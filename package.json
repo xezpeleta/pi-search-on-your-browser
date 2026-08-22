@@ -1,9 +1,9 @@
 {
   "name": "pi-search-on-your-browser",
-  "version": "0.1.1",
-  "description": "Search Google in your own visible Chrome — same approach as @antirez's ds4-agent. Zero dependencies, no API keys.",
+  "version": "0.2.0",
+  "description": "Search Google and read X (Twitter) in your own visible Chrome — same approach as @antirez's ds4-agent. Zero dependencies, no API keys.",
   "type": "module",
-  "keywords": ["pi-package", "search", "google", "chrome", "cdp", "browser", "ds4-agent"],
+  "keywords": ["pi-package", "search", "google", "chrome", "cdp", "browser", "ds4-agent", "twitter", "x"],
   "author": "xezpeleta",
   "license": "MIT",
   "engines": {

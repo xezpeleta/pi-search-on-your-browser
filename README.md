@@ -48,6 +48,18 @@ Visit any URL and get the page content as markdown.
 visit_page({ url: "https://example.com/article" })
 ```
 
+**X (Twitter) support:** Any `x.com` / `twitter.com` URL — a search results
+page, a profile, or an individual tweet — is extracted as structured tweets
+(handle, text, timestamp, permalink, engagement). This works because the
+dedicated Chrome profile carries your X login. X virtualizes its timeline, so
+the extractor scrolls and collects tweets incrementally, deduping by permalink.
+
+```
+visit_page({ url: "https://x.com/search?q=0x%20alpha&f=top" })   // top results
+visit_page({ url: "https://x.com/search?q=0x%20alpha&f=live" })  // latest
+visit_page({ url: "https://x.com/xezpeleta" })                   // a profile's tweets
+```
+
 ## Commands
 
 - `/google-search-kill` — Kill the Chrome browser

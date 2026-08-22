@@ -309,27 +309,150 @@ const EXTRACT_PAGE_JS =
   'if(!visible(el))continue;let s="";const tag=el.tagName;' +
   'if(/^H[1-6]$/.test(tag)){s="#".repeat(Number(tag[1]))+" "+inline(el);}' +
   'else if(tag==="LI"){s="- "+inline(el);}' +
-  'else if(tag==="PRE"){s="' + BT + BT + BT + '\\\\n"+(el.innerText||el.textContent||"").trimEnd()+"\\\\n' + BT + BT + BT + '";}' +
+  'else if(tag==="PRE"){s="' + BT + BT + BT + '\\n"+(el.innerText||el.textContent||"").trimEnd()+"\\n' + BT + BT + BT + '";}' +
   'else if(tag==="BLOCKQUOTE"){s="> "+clean(el.innerText||el.textContent);}' +
   "else{s=inline(el);}" +
   "s=s.trim();if(!s||seen.has(s))continue;seen.add(s);" +
-  'lines.push("",s);if(lines.join("\\\\n").length>90000){lines.push("","[Content truncated by browser extractor.]");break;}}' +
+  'lines.push("",s);if(lines.join("\\n").length>90000){lines.push("","[Content truncated by browser extractor.]");break;}}' +
   'lines.push("","## Visible links");let n=0;const linkSeen=new Set();' +
   'for(const a of document.querySelectorAll("a[href]")){' +
   "if(!visible(a))continue;const t=esc(a.innerText||a.textContent);if(t.length<3)continue;" +
   "let u;try{u=new URL(a.href)}catch{continue;}" +
   "if(!/^https?:$/.test(u.protocol)||linkSeen.has(u.href))continue;linkSeen.add(u.href);" +
   'lines.push("- ["+t.slice(0,160)+"]("+u.href+")");if(++n>=80)break;}' +
-  'return lines.join("\\\\n");' +
+  'return lines.join("\\n");' +
   "})()";
 
-async function runInPage(
-  url: string,
-  js: string,
-  clickConsent: boolean,
-  dynamicScroll: boolean,
-  onStatus: (msg: string) => void
-): Promise<string> {
+// ── X (Twitter) extractor ────────────────────────────────────────────────
+// Search results, profiles, and individual tweets all render tweets as
+// <article data-testid="tweet">. Written as a template literal for readability
+// (no backticks needed inside), unlike the Google/generic extractors above.
+//
+// X virtualizes its timeline: only a window of tweets is mounted in the DOM at
+// any time, and scrolling past evicts earlier ones. So this extractor is async
+// and self-scrolling — it collects the currently-mounted tweets, scrolls to
+// load more, and repeats, deduping by permalink. Tweets that get unmounted as
+// we scroll past them are already captured in `seen`.
+const X_EXTRACT_JS = `(async () => {
+  const clean = s => (s||"").replace(/\\s+/g, " ").trim();
+  const parseEng = s => {
+    if (!s) return "";
+    // aria-label looks like "48 Replies. Reply" / "1.2K Likes. Like" -> "48 replies"
+    const idx = s.lastIndexOf(". ");
+    const stats = (idx >= 0 ? s.slice(0, idx) : s).trim().toLowerCase();
+    return /\\d/.test(stats) ? stats : "";
+  };
+  const titleFor = () => {
+    try {
+      const u = new URL(location.href);
+      const p = u.pathname;
+      if (p === "/search") return "X search: " + (u.searchParams.get("q") || "(no query)");
+      const m = p.match(/^\\/([^/]+)\\/status\\/\\d+/);
+      if (m) return "Tweet by @" + m[1];
+      if (/^\\/[^/]+$/.test(p)) return "X profile: @" + p.slice(1);
+    } catch {}
+    return clean(document.title) || "X (Twitter)";
+  };
+  const collectTweet = art => {
+    const text = clean(art.querySelector('[data-testid="tweetText"]')?.innerText || "");
+    const userEl = art.querySelector('[data-testid="User-Name"]');
+    let handle = "", name = "";
+    if (userEl) {
+      const links = [...userEl.querySelectorAll('a[href]')];
+      const handleLink = links.find(a => /^\\/[^/]+$/.test(a.getAttribute("href")));
+      if (handleLink) handle = handleLink.getAttribute("href").slice(1);
+      name = clean(links[0]?.innerText || "");
+    }
+    const time = art.querySelector("time");
+    let permalink = "";
+    for (const a of art.querySelectorAll('a[href]')) {
+      if (/\\/status\\/\\d+/.test(a.getAttribute("href"))) { permalink = a.getAttribute("href"); break; }
+    }
+    const reply = parseEng(art.querySelector('[data-testid="reply"]')?.getAttribute("aria-label") || "");
+    const retweet = parseEng(art.querySelector('[data-testid="retweet"]')?.getAttribute("aria-label") || "");
+    const like = parseEng(art.querySelector('[data-testid="like"]')?.getAttribute("aria-label") || "");
+    return { handle, name, time: time?.getAttribute("datetime") || "", permalink, text, reply, retweet, like };
+  };
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const seen = new Map();
+  let stale = 0;
+  for (let i = 0; i < 12; i++) {
+    let added = 0;
+    for (const art of document.querySelectorAll('article[data-testid="tweet"]')) {
+      const t = collectTweet(art);
+      const key = t.permalink || (t.handle + "|" + t.text.slice(0, 40));
+      if (!seen.has(key)) { seen.set(key, t); added++; }
+    }
+    if (seen.size >= 40) break;
+    if (added === 0) { stale++; if (stale >= 2) break; } else { stale = 0; }
+    window.scrollBy(0, Math.round(window.innerHeight * 1.5));
+    await sleep(700);
+  }
+  window.scrollTo(0, 0);
+  const tweets = [...seen.values()];
+  const lines = ["# " + titleFor(), "", "URL: " + location.href, "", "## Tweets (" + tweets.length + ")", ""];
+  if (tweets.length === 0) {
+    lines.push("_No tweets found. The page may require login, or the search yielded no results._");
+    return lines.join("\\n");
+  }
+  for (const t of tweets) {
+    const link = t.permalink ? "https://x.com" + t.permalink : "";
+    lines.push("### @" + t.handle + (t.name ? " — " + t.name : ""));
+    const meta = [];
+    if (t.time) meta.push(t.time);
+    if (link) meta.push(link);
+    if (meta.length) lines.push(meta.join(" · "));
+    lines.push("");
+    lines.push(t.text || "(no text)");
+    lines.push("");
+    const eng = [];
+    if (t.reply) eng.push(t.reply);
+    if (t.retweet) eng.push(t.retweet);
+    if (t.like) eng.push(t.like);
+    if (eng.length) lines.push("_" + eng.join(" · ") + "_");
+    lines.push("");
+    lines.push("---");
+    lines.push("");
+  }
+  return lines.join("\\n");
+})()`;
+
+function isXUrl(url: string): boolean {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return host === "x.com" || host.endsWith(".x.com") ||
+      host === "twitter.com" || host.endsWith(".twitter.com");
+  } catch {
+    return false;
+  }
+}
+
+interface RunInPageOptions {
+  url: string;
+  js: string;
+  clickConsent?: boolean;
+  dynamicScroll?: boolean;
+  scrollCount?: number;
+  scrollDelayMs?: number;
+  initialWaitMs?: number;
+  waitForSelector?: string;
+  waitForTimeoutMs?: number;
+  onStatus: (msg: string) => void;
+}
+
+async function runInPage(opts: RunInPageOptions): Promise<string> {
+  const {
+    url,
+    js,
+    clickConsent = false,
+    dynamicScroll = false,
+    scrollCount = 3,
+    scrollDelayMs = 300,
+    initialWaitMs = 0,
+    waitForSelector,
+    waitForTimeoutMs = 8000,
+    onStatus,
+  } = opts;
   await ensureChrome();
 
   const tab = await openTab();
@@ -363,11 +486,28 @@ async function runInPage(
       }
     }
 
+    if (initialWaitMs > 0) {
+      onStatus("Waiting for page to render...");
+      await sleep(initialWaitMs);
+    }
+
+    if (waitForSelector) {
+      onStatus(`Waiting for ${waitForSelector}...`);
+      const deadline = Date.now() + waitForTimeoutMs;
+      while (Date.now() < deadline) {
+        const found = await cdp.evaluate(
+          `document.querySelector(${JSON.stringify(waitForSelector)}) !== null`
+        );
+        if (found) break;
+        await sleep(400);
+      }
+    }
+
     if (dynamicScroll) {
       onStatus("Scrolling for dynamic content...");
-      for (let i = 0; i < 3; i++) {
+      for (let i = 0; i < scrollCount; i++) {
         await cdp.evaluate("window.scrollTo(0, document.body.scrollHeight)");
-        await sleep(300);
+        await sleep(scrollDelayMs);
       }
       await cdp.evaluate("window.scrollTo(0, 0)");
       await sleep(200);
@@ -404,7 +544,13 @@ export async function googleSearch(
   const encodedQuery = encodeURIComponent(query);
   const url = `https://www.google.com/search?q=${encodedQuery}`;
 
-  const markdown = await runInPage(url, GOOGLE_SEARCH_JS, true, false, status);
+  const markdown = await runInPage({
+    url,
+    js: GOOGLE_SEARCH_JS,
+    clickConsent: true,
+    dynamicScroll: false,
+    onStatus: status,
+  });
   return { markdown, url };
 }
 
@@ -415,7 +561,28 @@ export async function visitPage(
   const status = onStatus ?? (() => {});
   status(`Visiting: ${url}`);
 
-  const markdown = await runInPage(url, EXTRACT_PAGE_JS, true, true, status);
+  if (isXUrl(url)) {
+    status("Detected X (Twitter) — using tweet extractor...");
+    const markdown = await runInPage({
+      url,
+      js: X_EXTRACT_JS,
+      clickConsent: false,
+      dynamicScroll: false,
+      initialWaitMs: 500,
+      waitForSelector: 'article[data-testid="tweet"]',
+      waitForTimeoutMs: 10_000,
+      onStatus: status,
+    });
+    return { markdown, url };
+  }
+
+  const markdown = await runInPage({
+    url,
+    js: EXTRACT_PAGE_JS,
+    clickConsent: true,
+    dynamicScroll: true,
+    onStatus: status,
+  });
   return { markdown, url };
 }
 
