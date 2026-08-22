@@ -417,11 +417,105 @@ const X_EXTRACT_JS = `(async () => {
   return lines.join("\\n");
 })()`;
 
+// ── Reddit extractor ─────────────────────────────────────────────────────
+// Post + comment pages render the post as <shreddit-post> and each comment as
+// <shreddit-comment>, which carries author/depth/score/created as attributes.
+// The generic extractor misses these (no <p>/<li> structure) and flattens
+// comments into an unattributed wall of text. Reddit lazy-loads comments on
+// scroll, so this is async + self-scrolling and dedupes by `thingid`, like the
+// X extractor. Only post/comment pages (path has /comments/) are routed here;
+// subreddit listings and user pages use the generic extractor.
+const REDDIT_EXTRACT_JS = `(async () => {
+  const clean = s => (s||"").replace(/\\s+/g, " ").trim();
+  const cleanMulti = s => (s||"").replace(/[ \\t]+/g, " ").replace(/\\n{3,}/g, "\\n\\n").trim();
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+  // ── Post ──
+  const post = document.querySelector('shreddit-post, [data-testid="post-container"]');
+  const titleEl = post ? post.querySelector('[slot="title"], h1, [data-testid="post-title"]') : null;
+  const title = clean(titleEl ? titleEl.innerText : document.title);
+  const author = (post && post.getAttribute('author')) || "";
+  let subreddit = "";
+  const sm = location.pathname.match(/^\\/r\\/([^/]+)/);
+  if (sm) subreddit = sm[1];
+  const postScore = (post && post.getAttribute('score')) || "";
+  const postBodyEl = post ? post.querySelector('[slot="text-body"], .md, [data-testid="post-text"]') : null;
+  const postBody = cleanMulti(postBodyEl ? postBodyEl.innerText : "");
+
+  // ── Comments (incremental scroll, dedup by thingid) ──
+  const seen = new Map();
+  let stale = 0;
+  for (let i = 0; i < 10; i++) {
+    let added = 0;
+    for (const c of document.querySelectorAll('shreddit-comment, [id^="comment-tree-comment-node"]')) {
+      const id = c.getAttribute('thingid') || c.id;
+      if (!id || seen.has(id)) continue;
+      const cAuthor = c.getAttribute('author') || "";
+      const depth = parseInt(c.getAttribute('depth') || '0', 10);
+      const cScore = c.getAttribute('score') || "";
+      const created = c.getAttribute('created') || (c.querySelector('time') ? c.querySelector('time').getAttribute('datetime') : "");
+      const isOp = c.hasAttribute('is-op');
+      const bodyEl = c.querySelector('[slot="comment"], .md');
+      const cBody = cleanMulti(bodyEl ? bodyEl.innerText : "");
+      seen.set(id, { author: cAuthor, depth, score: cScore, created, isOp, body: cBody });
+      added++;
+    }
+    if (seen.size >= 80) break;
+    if (added === 0) { stale++; if (stale >= 2) break; } else { stale = 0; }
+    window.scrollBy(0, Math.round(window.innerHeight * 1.2));
+    await sleep(650);
+  }
+  window.scrollTo(0, 0);
+
+  // ── Build markdown ──
+  const lines = [];
+  lines.push("# " + (title || "Reddit post"));
+  lines.push("");
+  lines.push("URL: " + location.href);
+  const pm = [];
+  if (subreddit) pm.push("r/" + subreddit);
+  if (author) pm.push("u/" + author);
+  if (postScore) pm.push(postScore + " points");
+  if (pm.length) { lines.push(""); lines.push(pm.join(" · ")); }
+  if (postBody) { lines.push(""); lines.push(postBody); }
+  lines.push("");
+  lines.push("## Comments (" + seen.size + ")");
+  lines.push("");
+  for (const c of seen.values()) {
+    const indent = "  ".repeat(Math.min(c.depth, 8));
+    const who = "u/" + c.author + (c.isOp ? " (OP)" : "");
+    const csm = [];
+    if (c.score) csm.push(c.score + " pts");
+    lines.push(indent + "- **" + who + "**" + (csm.length ? " _" + csm.join(", ") + "_" : ""));
+    if (c.body) {
+      const ind = indent + "  ";
+      lines.push(c.body.split("\\n").map(l => ind + l).join("\\n"));
+    }
+    lines.push("");
+  }
+  if (seen.size === 0) {
+    lines.push("_No comments found or extracted. The page may require login, or comments may not have loaded._");
+  }
+  return lines.join("\\n");
+})()`;
+
 function isXUrl(url: string): boolean {
   try {
     const host = new URL(url).hostname.toLowerCase();
     return host === "x.com" || host.endsWith(".x.com") ||
       host === "twitter.com" || host.endsWith(".twitter.com");
+  } catch {
+    return false;
+  }
+}
+
+function isRedditPostUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    const host = u.hostname.toLowerCase();
+    const isReddit = host === "reddit.com" || host.endsWith(".reddit.com");
+    // Only post/comment pages — listings and user pages use the generic extractor.
+    return isReddit && u.pathname.includes("/comments/");
   } catch {
     return false;
   }
@@ -570,6 +664,21 @@ export async function visitPage(
       dynamicScroll: false,
       initialWaitMs: 500,
       waitForSelector: 'article[data-testid="tweet"]',
+      waitForTimeoutMs: 10_000,
+      onStatus: status,
+    });
+    return { markdown, url };
+  }
+
+  if (isRedditPostUrl(url)) {
+    status("Detected Reddit post — using comment extractor...");
+    const markdown = await runInPage({
+      url,
+      js: REDDIT_EXTRACT_JS,
+      clickConsent: false,
+      dynamicScroll: false,
+      initialWaitMs: 500,
+      waitForSelector: 'shreddit-comment, shreddit-post',
       waitForTimeoutMs: 10_000,
       onStatus: status,
     });

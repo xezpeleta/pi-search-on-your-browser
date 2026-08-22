@@ -60,6 +60,17 @@ visit_page({ url: "https://x.com/search?q=0x%20alpha&f=live" })  // latest
 visit_page({ url: "https://x.com/xezpeleta" })                   // a profile's tweets
 ```
 
+**Reddit support:** Any `reddit.com` post URL (a path containing `/comments/`)
+is extracted as the post (title, author, score, self-text) plus threaded
+comments — each with author, score, OP marking, and depth-indented replies.
+Reddit lazy-loads comments on scroll, so the extractor scrolls and collects
+incrementally, deduping by comment id. Subreddit listings and user pages fall
+through to the generic extractor.
+
+```
+visit_page({ url: "https://www.reddit.com/r/programming/comments/.../" })
+```
+
 ## Commands
 
 - `/google-search-kill` — Kill the Chrome browser
