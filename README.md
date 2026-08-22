@@ -87,6 +87,19 @@ visit_page({ url: "https://www.amazon.es/-/en/.../dp/B097GZBZ9Y" })             
 Other Amazon pages (category, seller, etc.) fall through to the generic
 extractor.
 
+**Google Scholar support:** Any `scholar.google.com` URL is extracted as
+structured paper results — title, authors/venue/year, citation count, abstract
+snippet, and PDF link — instead of the flat H3 headers the generic extractor
+produces (which drops all the academic metadata). Scholar paginates 10 results
+per page (not infinite scroll), so the extractor returns the current page;
+for more results, visit the next page URL (`&start=10`, `&start=20`, etc.).
+Citation counts are parsed locale-agnostically ("Cited by 1108" / "Cité 1108
+fois" / "Citado por 1108" / "Zitiert von 1108").
+
+```
+visit_page({ url: "https://scholar.google.com/scholar?q=transformer+attention+is+all+you+need" })
+```
+
 ## Commands
 
 - `/google-search-kill` — Kill the Chrome browser

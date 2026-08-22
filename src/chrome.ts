@@ -652,6 +652,75 @@ const AMAZON_SEARCH_JS = `(async () => {
   return lines.join("\\n");
 })()`;
 
+// ── Google Scholar extractor ──────────────────────────────────────────────
+// Scholar search pages (scholar.google.com/scholar?q=...) render results as
+// .gs_r blocks, each with .gs_ri (info) containing .gs_rt (title+link), .gs_a
+// (authors/year/venue), .gs_rs (snippet), and .gs_fl (footer links: Cited by,
+// Related, Versions). The generic extractor flattens these into H3 headers and
+// loses the authors, snippets, citation counts, and PDF links — the data that
+// matters for academic search. Scholar paginates (10 results/page) rather than
+// infinite-scrolling, so this is synchronous like GOOGLE_SEARCH_JS (no async
+// scroll loop). The dedicated Chrome profile carries any locale setting, so
+// the citation footer text varies ("Cited by 1108" / "Cité 1108 fois" /
+// "Citado por 1108" / "Zitiert von 1108") — matched with a locale-agnostic
+// regex.
+const SCHOLAR_EXTRACT_JS = `(() => {
+  const clean = s => (s||"").replace(/\\s+/g, " ").trim();
+  const esc = s => clean(s).replace(/\\\\/g, "\\\\\\\\").replace(/\\[/g, "\\\\[").replace(/\\]/g, "\\\\]");
+  const q = new URLSearchParams(location.search).get("q") || clean(document.title).replace(/\\s*-\\s*Google Scholar\\s*$/i, "");
+  const results = [];
+  const seen = new Set();
+  for (const c of document.querySelectorAll(".gs_r")) {
+    const ri = c.querySelector(".gs_ri");
+    if (!ri) continue;
+    const titleEl = ri.querySelector(".gs_rt");
+    const titleA = titleEl ? titleEl.querySelector("a") : null;
+    const title = titleEl ? clean(titleEl.innerText).replace(/^\\[PDF\\]\\s*/i, "").replace(/^\\[HTML\\]\\s*/i, "").replace(/^\\[CITATION\\]\\s*/i, "") : null;
+    const href = titleA ? titleA.href : null;
+    if (!title || seen.has(title)) continue;
+    seen.add(title);
+    const meta = ri.querySelector(".gs_a") ? clean(ri.querySelector(".gs_a").innerText) : "";
+    const snip = ri.querySelector(".gs_rs") ? clean(ri.querySelector(".gs_rs").innerText) : "";
+    // Footer links: [Save, Cite, Cited by N, Related, Versions]
+    const fl = ri.querySelector(".gs_fl");
+    let cited = null;
+    if (fl) {
+      for (const a of fl.querySelectorAll("a")) {
+        const t = clean(a.innerText);
+        const m = t.match(/(\\d[\\d,]*)/);
+        if (m && /cited|cit\\u00e9|citado|zitiert/i.test(t)) { cited = m[1].replace(/,/g, ""); break; }
+      }
+    }
+    // PDF link (sidebar)
+    const pdfEl = c.querySelector(".gs_or_ggsm a, .gs_ggsd a");
+    const pdf = pdfEl ? pdfEl.href : null;
+    results.push({ title, href, meta, snip, cited, pdf });
+  }
+  // CAPTCHA / bot-check guard
+  if (results.length === 0 && /captcha|unusual traffic|automated queries/i.test(document.body.innerText)) {
+    return "# Google Scholar (blocked)\\n\\nURL: " + location.href + "\\n\\n_Scholar returned a CAPTCHA / bot-check page. Try again later or solve it in the visible Chrome window._";
+  }
+  const lines = ["# Google Scholar: " + (q || "(no query)"), "", "URL: " + location.href, "", "## Results (" + results.length + ")", ""];
+  if (results.length === 0) {
+    lines.push("_No results found or extracted._");
+    return lines.join("\\n");
+  }
+  let i = 0;
+  for (const r of results) {
+    i++;
+    lines.push(i + ". **" + r.title + "**");
+    if (r.meta) lines.push("   " + r.meta + (r.cited ? " · Cited by " + r.cited : ""));
+    else if (r.cited) lines.push("   Cited by " + r.cited);
+    if (r.snip) lines.push("   " + r.snip);
+    const links = [];
+    if (r.href) links.push("[Article](" + r.href + ")");
+    if (r.pdf) links.push("[PDF](" + r.pdf + ")");
+    if (links.length) lines.push("   " + links.join(" · "));
+    lines.push("");
+  }
+  return lines.join("\\n");
+})()`;
+
 function isXUrl(url: string): boolean {
   try {
     const host = new URL(url).hostname.toLowerCase();
@@ -691,6 +760,17 @@ function isAmazonSearchUrl(url: string): boolean {
     if (!/(^|\.)amazon\./.test(u.hostname.toLowerCase())) return false;
     // Amazon search: /s?k=... (also /s/ on some locales)
     return (u.pathname === "/s" || u.pathname.startsWith("/s/")) && u.searchParams.has("k");
+  } catch {
+    return false;
+  }
+}
+
+function isScholarSearchUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    const host = u.hostname.toLowerCase();
+    // scholar.google.com (any TLD) — search and citation pages both use /scholar
+    return host === "scholar.google.com" || host.endsWith(".scholar.google.com");
   } catch {
     return false;
   }
@@ -884,6 +964,21 @@ export async function visitPage(
       dynamicScroll: false,
       initialWaitMs: 500,
       waitForSelector: '[data-component-type="s-search-result"]',
+      waitForTimeoutMs: 10_000,
+      onStatus: status,
+    });
+    return { markdown, url };
+  }
+
+  if (isScholarSearchUrl(url)) {
+    status("Detected Google Scholar — using academic extractor...");
+    const markdown = await runInPage({
+      url,
+      js: SCHOLAR_EXTRACT_JS,
+      clickConsent: false,
+      dynamicScroll: false,
+      initialWaitMs: 500,
+      waitForSelector: ".gs_r, .gs_ri",
       waitForTimeoutMs: 10_000,
       onStatus: status,
     });
