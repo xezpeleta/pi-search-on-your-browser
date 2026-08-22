@@ -1,8 +1,12 @@
 {
   "name": "pi-search-on-your-browser",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "description": "Search Google and read X (Twitter), Reddit, Amazon, and Google Scholar in your own visible Chrome \u2014 same approach as @antirez's ds4-agent. Zero dependencies, no API keys.",
   "type": "module",
+  "scripts": {
+    "test": "node --experimental-strip-types --test tests/unit/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
   "keywords": [
     "pi-package",
     "search",
@@ -39,5 +43,9 @@
     "@earendil-works/pi-coding-agent": {
       "optional": true
     }
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0"
   }
 }

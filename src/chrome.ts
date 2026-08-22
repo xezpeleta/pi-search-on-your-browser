@@ -50,7 +50,17 @@ interface PendingCall {
   reject: (e: Error) => void;
 }
 
-class CDPClient {
+/** Minimal CDP interface used by runInPageSession. CDPClient implements this;
+ *  tests pass a fake so the navigate/waitForSelector/extract logic can be
+ *  exercised without a real browser or WebSocket. */
+interface CDPLike {
+  call(method: string, params?: Record<string, unknown>): Promise<unknown>;
+  evaluate(expression: string): Promise<string>;
+  onEvent(method: string, handler: (params: unknown) => void): void;
+  disconnect(): void;
+}
+
+class CDPClient implements CDPLike {
   private ws: WebSocket | null = null;
   private nextId = 1;
   private pending = new Map<number, PendingCall>();
@@ -793,10 +803,15 @@ interface RunInPageOptions {
   initialWaitMs?: number;
   waitForSelector?: string;
   waitForTimeoutMs?: number;
+  /** Poll interval for waitForSelector (ms). Default 400. */
+  waitForSelectorPollMs?: number;
   onStatus: (msg: string) => void;
 }
 
-async function runInPage(opts: RunInPageOptions): Promise<string> {
+/** Session logic: navigate, wait, scroll, extract — all against a connected
+ *  CDP client. Split out from runInPage so it can be tested with a fake
+ *  CDPLike (no real Chrome, no WebSocket). */
+async function runInPageSession(cdp: CDPLike, opts: RunInPageOptions): Promise<string> {
   const {
     url,
     js,
@@ -807,8 +822,80 @@ async function runInPage(opts: RunInPageOptions): Promise<string> {
     initialWaitMs = 0,
     waitForSelector,
     waitForTimeoutMs = 8000,
+    waitForSelectorPollMs = 400,
     onStatus,
   } = opts;
+
+  onStatus(`Navigating to ${new URL(url).hostname}...`);
+
+  await cdp.call("Page.enable");
+  await cdp.call("Runtime.enable");
+
+  const loaded = new Promise<void>((resolve) => {
+    cdp.onEvent("Page.loadEventFired", () => resolve());
+  });
+  let loadTimer!: ReturnType<typeof setTimeout>;
+  const loadTimeout = new Promise<void>((resolve) => { loadTimer = setTimeout(resolve, 10_000); });
+
+  await cdp.call("Page.navigate", { url });
+  await Promise.race([loaded, loadTimeout]);
+  clearTimeout(loadTimer);
+
+  if (clickConsent) {
+    const clicked = await cdp.evaluate(GOOGLE_CONSENT_JS);
+    if (clicked) {
+      onStatus(`Consent: ${clicked}`);
+      const consentLoaded = new Promise<void>((resolve) => {
+        cdp.onEvent("Page.loadEventFired", () => resolve());
+      });
+      let consentTimer!: ReturnType<typeof setTimeout>;
+      const consentTimeout = new Promise<void>((resolve) => { consentTimer = setTimeout(resolve, 5_000); });
+      await Promise.race([consentLoaded, consentTimeout]);
+      clearTimeout(consentTimer);
+    }
+  }
+
+  if (initialWaitMs > 0) {
+    onStatus("Waiting for page to render...");
+    await sleep(initialWaitMs);
+  }
+
+  if (waitForSelector) {
+    onStatus(`Waiting for ${waitForSelector}...`);
+    const deadline = Date.now() + waitForTimeoutMs;
+    while (Date.now() < deadline) {
+      // cdp.evaluate stringifies the return value (String(value)), so the
+      // boolean false becomes "false" (a truthy string). Compare explicitly
+      // to "true" instead of relying on truthiness.
+      const found = await cdp.evaluate(
+        `document.querySelector(${JSON.stringify(waitForSelector)}) !== null`
+      );
+      if (found === "true") break;
+      await sleep(waitForSelectorPollMs);
+    }
+  }
+
+  if (dynamicScroll) {
+    onStatus("Scrolling for dynamic content...");
+    for (let i = 0; i < scrollCount; i++) {
+      await cdp.evaluate("window.scrollTo(0, document.body.scrollHeight)");
+      await sleep(scrollDelayMs);
+    }
+    await cdp.evaluate("window.scrollTo(0, 0)");
+    await sleep(200);
+  }
+
+  onStatus("Extracting content...");
+  const result = await cdp.evaluate(js);
+
+  // Truncate
+  if (result.length > MAX_RESULT_BYTES) {
+    return result.slice(0, MAX_RESULT_BYTES) + "\n\n[Content truncated at 1MB]";
+  }
+  return result;
+}
+
+async function runInPage(opts: RunInPageOptions): Promise<string> {
   await ensureChrome();
 
   const tab = await openTab();
@@ -816,70 +903,8 @@ async function runInPage(opts: RunInPageOptions): Promise<string> {
   const cdp = new CDPClient();
   await cdp.connect(tab.wsUrl);
 
-  onStatus(`Navigating to ${new URL(url).hostname}...`);
-
   try {
-    await cdp.call("Page.enable");
-    await cdp.call("Runtime.enable");
-
-    const loaded = new Promise<void>((resolve) => {
-      cdp.onEvent("Page.loadEventFired", () => resolve());
-    });
-    const loadTimeout = new Promise<void>((resolve) => setTimeout(resolve, 10_000));
-
-    await cdp.call("Page.navigate", { url });
-    await Promise.race([loaded, loadTimeout]);
-
-    if (clickConsent) {
-      const clicked = await cdp.evaluate(GOOGLE_CONSENT_JS);
-      if (clicked) {
-        onStatus(`Consent: ${clicked}`);
-        const consentLoaded = new Promise<void>((resolve) => {
-          cdp.onEvent("Page.loadEventFired", () => resolve());
-        });
-        const consentTimeout = new Promise<void>((resolve) => setTimeout(resolve, 5_000));
-        await Promise.race([consentLoaded, consentTimeout]);
-      }
-    }
-
-    if (initialWaitMs > 0) {
-      onStatus("Waiting for page to render...");
-      await sleep(initialWaitMs);
-    }
-
-    if (waitForSelector) {
-      onStatus(`Waiting for ${waitForSelector}...`);
-      const deadline = Date.now() + waitForTimeoutMs;
-      while (Date.now() < deadline) {
-        // cdp.evaluate stringifies the return value (String(value)), so the
-        // boolean false becomes "false" (a truthy string). Compare explicitly
-        // to "true" instead of relying on truthiness.
-        const found = await cdp.evaluate(
-          `document.querySelector(${JSON.stringify(waitForSelector)}) !== null`
-        );
-        if (found === "true") break;
-        await sleep(400);
-      }
-    }
-
-    if (dynamicScroll) {
-      onStatus("Scrolling for dynamic content...");
-      for (let i = 0; i < scrollCount; i++) {
-        await cdp.evaluate("window.scrollTo(0, document.body.scrollHeight)");
-        await sleep(scrollDelayMs);
-      }
-      await cdp.evaluate("window.scrollTo(0, 0)");
-      await sleep(200);
-    }
-
-    onStatus("Extracting content...");
-    const result = await cdp.evaluate(js);
-
-    // Truncate
-    if (result.length > MAX_RESULT_BYTES) {
-      return result.slice(0, MAX_RESULT_BYTES) + "\n\n[Content truncated at 1MB]";
-    }
-    return result;
+    return await runInPageSession(cdp, opts);
   } finally {
     cdp.disconnect();
     await closeTab(tab.targetId);
@@ -1011,3 +1036,24 @@ export function shutdownChrome() {
     chromeProcess = null;
   }
 }
+
+// Exported for testing — internal API, not part of the extension's tool surface
+// (index.ts only re-exports googleSearch, visitPage, shutdownChrome).
+export {
+  type CDPLike,
+  type RunInPageOptions,
+  runInPageSession,
+  isXUrl,
+  isRedditPostUrl,
+  isAmazonProductUrl,
+  isAmazonSearchUrl,
+  isScholarSearchUrl,
+  GOOGLE_CONSENT_JS,
+  GOOGLE_SEARCH_JS,
+  EXTRACT_PAGE_JS,
+  X_EXTRACT_JS,
+  REDDIT_EXTRACT_JS,
+  AMAZON_PRODUCT_JS,
+  AMAZON_SEARCH_JS,
+  SCHOLAR_EXTRACT_JS,
+};

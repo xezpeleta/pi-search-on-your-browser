@@ -107,11 +107,39 @@ visit_page({ url: "https://scholar.google.com/scholar?q=transformer+attention+is
 ## Requirements
 
 - **Google Chrome or Chromium** installed (Firefox is not currently supported — see below)
-- Node.js 20+
+- Node.js 20+ (tests require Node.js 22.6+ for native TypeScript stripping)
 
 ### Why Chrome only?
 
 Firefox uses the [WebDriver BiDi protocol](https://w3c.github.io/webdriver-bidi) for remote control, not the Chrome DevTools Protocol (CDP). While both use WebSocket, Firefox's BiDi server requires a manual WebSocket handshake with specific header handling (no `Origin` header). Node.js's built-in `WebSocket` doesn't expose custom headers, and adding a full WebSocket library like `ws` would break the zero-dependency constraint of this package. Pull requests welcome if you can solve this without dependencies.
+
+## Development
+
+### Tests
+
+The test suite runs without a browser, without a network, and with **zero runtime dependencies** — only Node.js's built-in test runner and native TypeScript type-stripping (Node 22.6+, unflagged in Node 24).
+
+```bash
+npm test
+```
+
+Three layers of tests:
+
+- **`tests/unit/urls.test.ts`** — table-driven tests for the URL classifiers (`isXUrl`, `isRedditPostUrl`, `isAmazonProductUrl`, `isAmazonSearchUrl`, `isScholarSearchUrl`).
+- **`tests/unit/extractors-parse.test.ts`** — validates every extractor JS string (`X_EXTRACT_JS`, `REDDIT_EXTRACT_JS`, etc.) parses as valid JavaScript via `new Function()`. Catches template-literal escaping bugs (the `\n` vs real-newline class of errors) without a browser.
+- **`tests/unit/cdp-client.test.ts`** — tests `runInPageSession` (the navigate/waitForSelector/scroll/extract logic) against a fake `CDPLike` implementation. Includes the **regression test for the v0.5.1 bug**: `cdp.evaluate()` stringifies return values, so `String(false)` → `"false"` (truthy); the test asserts `waitForSelector` does *not* break on the first poll when the selector is absent.
+
+### Type-checking
+
+```bash
+npm run typecheck
+```
+
+Uses `tsc --strict` (the `typescript` and `@types/node` devDependencies). Note: `index.ts` imports pi's own types (`@earendil-works/pi-coding-agent`, `@earendil-works/pi-tui`, `typebox`) which are provided by the pi runtime — it is type-checked by pi at load time. The `tsconfig.json` scopes `tsc` to `src/` and `tests/` (which only use Node built-ins).
+
+### Why no test framework?
+
+The project uses `node:test` + `node:assert/strict` (built into Node.js) and native TypeScript stripping — no jest, vitest, mocha, or even `tsx`. This aligns with the zero-dependency ethos: the only devDependencies are `typescript` (for `tsc`) and `@types/node` (for type definitions), neither of which is installed by consumers.
 
 ## Comparison with ds4-agent
 
@@ -125,6 +153,15 @@ Firefox uses the [WebDriver BiDi protocol](https://w3c.github.io/webdriver-bidi)
 | Dependencies | Zero npm deps (just Node.js built-ins) | Zero deps (just POSIX) |
 
 ## Changelog
+
+### v0.6.0
+
+- Added a test suite (`tests/unit/`) with 26 tests covering URL classifiers, extractor JS parse-validity, and CDP session logic (including a regression test for the v0.5.1 `waitForSelector` bug). Runs with `npm test` using Node's built-in test runner + native TypeScript stripping — zero runtime dependencies.
+- Refactored `runInPage` to extract `runInPageSession(cdp, opts)` so the navigate/waitForSelector/scroll/extract logic is testable with a fake CDP client (no browser needed).
+- Added `CDPLike` interface and exported testable internals (URL classifiers, extractor constants, `runInPageSession`).
+- Added `waitForSelectorPollMs` option to `RunInPageOptions` (default 400ms).
+- Fixed dangling `loadTimeout`/`consentTimeout` timers (now cleared after `Promise.race`).
+- Added `tsconfig.json` (scoped to `src/` + `tests/`) and devDependencies (`typescript`, `@types/node`).
 
 ### v0.5.1
 
