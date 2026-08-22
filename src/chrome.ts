@@ -396,7 +396,14 @@ const X_EXTRACT_JS = `(async () => {
   const tweets = [...seen.values()];
   const lines = ["# " + titleFor(), "", "URL: " + location.href, "", "## Tweets (" + tweets.length + ")", ""];
   if (tweets.length === 0) {
-    lines.push("_No tweets found. The page may require login, or the search yielded no results._");
+    const bodyText = (document.body.innerText || "").slice(0, 2000);
+    if (/something went wrong|try reloading|algo sali/i.test(bodyText)) {
+      lines.push("_X returned an error (\\"Something went wrong. Try reloading.\\"). This is usually a transient rate-limit — wait a minute and retry, or open the URL in the visible Chrome window and reload._");
+    } else if (/log in|iniciar sesi|connexion/i.test(bodyText)) {
+      lines.push("_No tweets found — the page is showing a login wall. Log in to X in the visible Chrome window (profile at ~/.pi-search-browser/) and retry._");
+    } else {
+      lines.push("_No tweets found. The search may have yielded no results, or the page failed to render._");
+    }
     return lines.join("\\n");
   }
   for (const t of tweets) {
@@ -844,10 +851,13 @@ async function runInPage(opts: RunInPageOptions): Promise<string> {
       onStatus(`Waiting for ${waitForSelector}...`);
       const deadline = Date.now() + waitForTimeoutMs;
       while (Date.now() < deadline) {
+        // cdp.evaluate stringifies the return value (String(value)), so the
+        // boolean false becomes "false" (a truthy string). Compare explicitly
+        // to "true" instead of relying on truthiness.
         const found = await cdp.evaluate(
           `document.querySelector(${JSON.stringify(waitForSelector)}) !== null`
         );
-        if (found) break;
+        if (found === "true") break;
         await sleep(400);
       }
     }

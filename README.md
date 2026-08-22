@@ -124,6 +124,34 @@ Firefox uses the [WebDriver BiDi protocol](https://w3c.github.io/webdriver-bidi)
 | Page extraction | Same JS extractors, ported to TS | Inline JS in C |
 | Dependencies | Zero npm deps (just Node.js built-ins) | Zero deps (just POSIX) |
 
+## Changelog
+
+### v0.5.1
+
+- **Critical fix**: `waitForSelector` was broken — `cdp.evaluate()` stringifies return values (`String(false)` → `"false"`, which is truthy), so the `if (found) break` check always broke on the first poll. This meant extractors ran **before** the target selector appeared in the DOM, causing flaky 0-result extractions (X ~60% failure rate). Fixed to compare `found === "true"`. Affects all extractors using `waitForSelector`: X, Reddit, Amazon (product + search), and Google Scholar.
+- X extractor now detects X's "Something went wrong. Try reloading." error state (transient rate-limit) and reports it clearly, instead of the misleading "may require login" message. Also detects login walls.
+
+### v0.5.0
+
+- Added Google Scholar search extraction (`scholar.google.com/scholar?q=...`). Synchronous extractor (Scholar paginates 10/page, not infinite scroll) that extracts title, authors/venue/year, citation count (locale-agnostic), snippet, article link, and PDF link.
+
+### v0.4.0
+
+- Added Amazon product page extraction (`amazon.*/dp/ASIN`, `/gp/product/ASIN`, `/gp/aw/d/ASIN`). Async self-scrolling extractor for lazy-loaded reviews. Extracts title, price, list price, availability, brand, rating, review count, feature bullets, tech specs, ASIN, and best-effort top reviews.
+- Added Amazon search results extraction (`amazon.*/s?k=...`). Async self-scrolling listing extractor, dedupes by ASIN.
+
+### v0.3.0
+
+- Added Reddit post + comment extraction (URLs containing `/comments/`). Async self-scrolling extractor with threaded comments (by `depth` attribute), dedupes by `thingid`, stale-break after 2 idle rounds.
+
+### v0.2.0
+
+- Added X (Twitter) extraction for search, profile, and individual tweet URLs. Async self-scrolling IIFE handles X's DOM virtualization, dedupes by permalink.
+
+### v0.3.1
+
+- Fixed Google consent auto-clicker: selector included `a` tags (consent buttons are never `<a>`) and regex patterns were unanchored (matched "Service Level Agreement" footer). Patterns now anchored with `^...$`, selector limited to `button,[role=button],input[type=submit]`.
+
 ## License
 
 MIT
