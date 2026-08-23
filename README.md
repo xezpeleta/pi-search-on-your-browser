@@ -310,6 +310,15 @@ The project uses `node:test` + `node:assert/strict` (built into Node.js) and nat
 
 ## Changelog
 
+### v0.7.3
+
+- **Improved tool guidance for `clean` and `query`.** The `promptGuidelines` and parameter descriptions now tell the LLM not just *when to use* each flag but *when to avoid* it, so it doesn't apply them blindly:
+  - **`clean` avoid:** non-article pages (dashboards, indexes) where there is no clear main content — Defuddle may extract the wrong block or nothing (and the fallback only triggers on error/empty, not wrong content).
+  - **`clean` preserves content links** (article URLs, citations, story links) but **drops chrome links** (nav bars, sidebars, footers, action buttons). Verified empirically against the Hacker News front page: all 30 story links + all 30 comment links preserved in `clean` mode; only nav/footer/hide-action links dropped. So `clean` is fine for gathering content links — only avoid it if you specifically need nav/footer links (e.g. finding the 'About' or 'Contact' page URL). The previous guidance ("avoid clean when you need links") was too broad and misleading.
+  - **`query` avoid:** when you need verbatim text (code snippets, API signatures, exact numbers, error messages) since the subagent paraphrases; when the page is already small; when you need to judge the content yourself; or when the page content is the deliverable.
+  - **New research-workflow guideline:** use `clean: true` + `query` together by default for intensive research (search → visit each result with clean+query → synthesize).
+  - Fixed stale `query` parameter description that still referenced the removed `not_configured` error path; now documents the current-model default and recommends combining with `clean`.
+
 ### v0.7.2
 
 - **Fix: subagent `query` mode crashed on reasoning-enabled models with HTTP 400.** `buildReasoningParams` sent `{ reasoning_effort: "off" }` as a literal string when reasoning was disabled (the default), but many APIs (vLLM, OpenAI) reject `"off"` — they expect `"none"`/`"minimal"`/... or no param at all. Now mirrors pi's behavior: the default format omits `reasoning_effort` entirely when the level is `"off"`/`"none"` (pi only sends it when truthy); the OpenRouter format sends `effort: "none"`. This was the most impactful bug in v0.7.0 — it made `query` mode unusable with any reasoning-capable model (e.g. GLM-5.2 served via vLLM).
