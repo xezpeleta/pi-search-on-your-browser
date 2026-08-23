@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { runInPageSession, type CDPLike, type RunInPageOptions, DEFUDDLE_DRIVER_JS, getDefuddleBundle } from "../../src/chrome.ts";
+import { runInPageSession, type CDPLike, type RunInPageOptions } from "../../src/chrome.ts";
+import { DEFUDDLE_DRIVER_JS, getDefuddleBundle } from "../../src/extractors.ts";
 
 // ── Fake CDP ───────────────────────────────────────────────────────────────
 // Implements CDPLike so runInPageSession can be exercised without a real

@@ -10,7 +10,7 @@ import {
   AMAZON_SEARCH_JS,
   SCHOLAR_EXTRACT_JS,
   DEFUDDLE_DRIVER_JS,
-} from "../../src/chrome.ts";
+} from "../../src/extractors.ts";
 
 // Every extractor is a JS string built from a TypeScript template literal.
 // If the escaping is wrong (e.g. a single \n becomes a real newline inside a

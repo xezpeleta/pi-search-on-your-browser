@@ -6,7 +6,7 @@ import {
   isAmazonProductUrl,
   isAmazonSearchUrl,
   isScholarSearchUrl,
-} from "../../src/chrome.ts";
+} from "../../src/extractors.ts";
 
 // ── isXUrl ─────────────────────────────────────────────────────────────────
 

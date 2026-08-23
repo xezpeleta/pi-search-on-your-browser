@@ -51,12 +51,28 @@ test("buildReasoningParams: default format uses reasoning_effort", () => {
   assert.deepEqual(params, { reasoning_effort: "high" });
 });
 
+test("buildReasoningParams: default format with 'off' returns undefined (not reasoning_effort: 'off')", () => {
+  // 'off' must not be sent as reasoning_effort — many APIs (vLLM, OpenAI)
+  // reject it. Mirror pi: don't send the param when reasoning is off.
+  const params = buildReasoningParams(model({ reasoning: true }), "off");
+  assert.equal(params, undefined);
+});
+
 test("buildReasoningParams: openrouter format uses reasoning.effort", () => {
   const params = buildReasoningParams(
     model({ reasoning: true, compat: { thinkingFormat: "openrouter" } }),
     "medium",
   );
   assert.deepEqual(params, { reasoning: { effort: "medium" } });
+});
+
+test("buildReasoningParams: openrouter format with 'off' sends effort: 'none'", () => {
+  // Mirror pi's OpenRouter path: falsy reasoning → effort: "none".
+  const params = buildReasoningParams(
+    model({ reasoning: true, compat: { thinkingFormat: "openrouter" } }),
+    "off",
+  );
+  assert.deepEqual(params, { reasoning: { effort: "none" } });
 });
 
 test("buildReasoningParams: qwen format uses enable_thinking boolean", () => {

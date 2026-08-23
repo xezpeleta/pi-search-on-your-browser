@@ -336,6 +336,10 @@ export function buildReasoningParams(
   }
 
   if (format === "deepseek" || format === "openrouter") {
+    // Mirror pi: OpenRouter sends effort: "none" when reasoning is off.
+    if (effectiveLevel === "off" || effectiveLevel === "none") {
+      return { reasoning: { effort: "none" } };
+    }
     return { reasoning: { effort: effectiveLevel } };
   }
 
@@ -347,7 +351,13 @@ export function buildReasoningParams(
     return { reasoning: { enabled: true }, reasoning_effort: effectiveLevel };
   }
 
-  // Default: standard OpenAI reasoning_effort
+  // Default: standard OpenAI reasoning_effort.
+  // Mirror pi: when reasoning is "off", don't send the param at all (pi only
+  // sends reasoning_effort when the value is truthy). Sending "off" causes
+  // HTTP 400 on APIs (e.g. vLLM) that accept "none"/"minimal"/... but not "off".
+  if (effectiveLevel === "off" || effectiveLevel === "none") {
+    return undefined;
+  }
   return { reasoning_effort: effectiveLevel };
 }
 
