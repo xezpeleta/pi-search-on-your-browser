@@ -310,9 +310,12 @@ The project uses `node:test` + `node:assert/strict` (built into Node.js) and nat
 
 ## Changelog
 
-### v0.7.1
+### v0.7.2
 
 - **Fix: subagent `query` mode crashed on reasoning-enabled models with HTTP 400.** `buildReasoningParams` sent `{ reasoning_effort: "off" }` as a literal string when reasoning was disabled (the default), but many APIs (vLLM, OpenAI) reject `"off"` — they expect `"none"`/`"minimal"`/... or no param at all. Now mirrors pi's behavior: the default format omits `reasoning_effort` entirely when the level is `"off"`/`"none"` (pi only sends it when truthy); the OpenRouter format sends `effort: "none"`. This was the most impactful bug in v0.7.0 — it made `query` mode unusable with any reasoning-capable model (e.g. GLM-5.2 served via vLLM).
+
+### v0.7.1
+
 - **Internal refactor: split extractors into `src/extractors.ts`.** All JavaScript extractor strings (`X_EXTRACT_JS`, `REDDIT_EXTRACT_JS`, `AMAZON_PRODUCT_JS`, etc.), URL classifiers (`isXUrl`, `isRedditPostUrl`, etc.), and the Defuddle bundle/driver moved from `chrome.ts` (1214 lines) into a dedicated `extractors.ts` (608 lines). `chrome.ts` drops to 615 lines of pure CDP plumbing + public API. This isolates the high-churn site-specific code (which changes whenever a site redesigns its DOM) from the stable CDP infrastructure. Zero behavior change.
 - **Deduplicated `visitPage` dispatch.** The 8 repeated `runInPage` + `resolveHttpError` blocks (one per specialized extractor + clean + generic) collapsed into a single `extractVia()` helper. `visitPage` is now a clean dispatch table — each path is one `return extractVia(...)` line instead of an 8-line block. `googleSearch` uses the same helper.
 
