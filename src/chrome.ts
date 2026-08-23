@@ -11,9 +11,10 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdirSync, existsSync } from "node:fs";
+import { mkdirSync, existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const PROFILE_DIR = join(homedir(), ".pi-search-browser");
 const CDP_PORT = 9322;
@@ -336,6 +337,60 @@ const EXTRACT_PAGE_JS =
   'lines.push("- ["+t.slice(0,160)+"]("+u.href+")");if(++n>=80)break;}' +
   'return lines.join("\\n");' +
   "})()";
+
+// ── Defuddle (clean article extraction) ─────────────────────────────────
+// A vendored, self-contained UMD bundle of Defuddle (MIT, by Steph Ango /
+// @kepano) — the same library the Obsidian Web Clipper uses. When injected
+// into a page, it exposes `window.Defuddle`, which extracts the page's main
+// article content (reader-mode style: drops nav, sidebars, ads, footers) and
+// converts it to clean Markdown via the bundled Turndown engine.
+//
+// This is far cleaner than EXTRACT_PAGE_JS (the naive block-walker fallback)
+// for articles, docs, and blog posts: no navigation noise, no "visible links"
+// dump, no 90 KB truncation cliff — just the article content as Markdown.
+//
+// See src/vendor/README.md for build provenance and license attribution.
+const DEFUDDLE_BUNDLE_PATH = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "vendor",
+  "defuddle-browser.js",
+);
+let defuddleBundleCache: string | null = null;
+function getDefuddleBundle(): string {
+  if (defuddleBundleCache === null) {
+    defuddleBundleCache = readFileSync(DEFUDDLE_BUNDLE_PATH, "utf8");
+  }
+  return defuddleBundleCache;
+}
+
+// Driver: runs AFTER the bundle is injected (window.Defuddle exists).
+// Uses { markdown: true } so Defuddle replaces result.content with Markdown.
+// On failure or empty extraction, returns a short error so the caller can
+// fall back to the generic extractor.
+const DEFUDDLE_DRIVER_JS = `(() => {
+  if (typeof Defuddle === "undefined") return "__DEFUDDLE_ERROR__: bundle did not load";
+  try {
+    const d = new Defuddle(document, { url: location.href, markdown: true });
+    const r = d.parse();
+    const content = (r.content || "").trim();
+    if (!content) return "__DEFUDDLE_ERROR__: no content extracted";
+    const lines = [];
+    lines.push("# " + (r.title || document.title || location.href));
+    lines.push("");
+    lines.push("URL: " + location.href);
+    const meta = [];
+    if (r.author) meta.push("by " + r.author);
+    if (r.published) meta.push(r.published);
+    if (r.wordCount) meta.push(r.wordCount + " words");
+    if (r.site) meta.push(r.site);
+    if (meta.length) { lines.push(""); lines.push(meta.join(" · ")); }
+    lines.push("");
+    lines.push(content);
+    return lines.join("\\n");
+  } catch (e) {
+    return "__DEFUDDLE_ERROR__: " + (e && e.message || String(e));
+  }
+})()`;
 
 // ── X (Twitter) extractor ────────────────────────────────────────────────
 // Search results, profiles, and individual tweets all render tweets as
@@ -805,6 +860,10 @@ interface RunInPageOptions {
   waitForTimeoutMs?: number;
   /** Poll interval for waitForSelector (ms). Default 400. */
   waitForSelectorPollMs?: number;
+  /** Optional fallback JS to run in the SAME tab if the primary `js` returns
+   *  an error marker or very short content. Avoids a second navigation when
+   *  the primary extractor (e.g. Defuddle) fails on a page. */
+  fallbackJs?: string;
   onStatus: (msg: string) => void;
 }
 
@@ -831,6 +890,30 @@ async function runInPageSession(cdp: CDPLike, opts: RunInPageOptions): Promise<s
   await cdp.call("Page.enable");
   await cdp.call("Runtime.enable");
 
+  // Capture the main document's HTTP response status so we can surface 4xx/5xx
+  // errors (e.g. a 404 on a dead Cloudflare blog link) instead of silently
+  // extracting the error page's content. We listen for the FIRST Document-type
+  // response, which is the navigation itself (after any redirects).
+  //
+  // A const container (rather than a let variable) is used because TypeScript's
+  // control-flow analysis can't prove the onEvent closure actually ran, so a
+  // `let x = null` would stay narrowed to `null` at the check below. Mutating
+  // properties on a const object is tracked correctly through closures.
+  const docResponse = { status: 0, statusText: "" };
+  let gotDocResponse = false;
+  cdp.onEvent("Network.responseReceived", (params) => {
+    const p = params as {
+      type?: string;
+      response?: { url?: string; status?: number; statusText?: string };
+    };
+    if (p.type === "Document" && p.response && !gotDocResponse) {
+      docResponse.status = p.response.status ?? 0;
+      docResponse.statusText = p.response.statusText ?? "";
+      gotDocResponse = true;
+    }
+  });
+  await cdp.call("Network.enable");
+
   const loaded = new Promise<void>((resolve) => {
     cdp.onEvent("Page.loadEventFired", () => resolve());
   });
@@ -840,6 +923,15 @@ async function runInPageSession(cdp: CDPLike, opts: RunInPageOptions): Promise<s
   await cdp.call("Page.navigate", { url });
   await Promise.race([loaded, loadTimeout]);
   clearTimeout(loadTimer);
+
+  // If the server returned an HTTP error (4xx/5xx), don't bother running the
+  // extractor on the error page — return a clear marker so visitPage can
+  // surface it to the LLM as an error result. This prevents the model from
+  // receiving "Page Not Found" gibberish as if it were page content.
+  if (gotDocResponse && docResponse.status >= 400) {
+    onStatus(`HTTP ${docResponse.status} ${docResponse.statusText}`.trim());
+    return `__HTTP_ERROR__: ${docResponse.status} ${docResponse.statusText}`.trim();
+  }
 
   if (clickConsent) {
     const clicked = await cdp.evaluate(GOOGLE_CONSENT_JS);
@@ -886,7 +978,14 @@ async function runInPageSession(cdp: CDPLike, opts: RunInPageOptions): Promise<s
   }
 
   onStatus("Extracting content...");
-  const result = await cdp.evaluate(js);
+  let result = await cdp.evaluate(js);
+
+  // Fallback: if the primary extractor returned an error marker or nothing
+  // useful, run the fallback JS in the same tab (no re-navigation).
+  if (opts.fallbackJs && (result.startsWith("__DEFUDDLE_ERROR__") || result.trim().length < 50)) {
+    onStatus("Clean extraction yielded no content — falling back to generic extractor...");
+    result = await cdp.evaluate(opts.fallbackJs);
+  }
 
   // Truncate
   if (result.length > MAX_RESULT_BYTES) {
@@ -916,6 +1015,25 @@ async function runInPage(opts: RunInPageOptions): Promise<string> {
 export interface SearchResult {
   markdown: string;
   url: string;
+  /** HTTP status of the main document response, when captured. Set (with an
+   *  empty `markdown`) when the server returned a 4xx/5xx error, so the tool
+   *  layer can surface it as an error instead of extracting the error page. */
+  httpStatus?: number;
+  httpStatusText?: string;
+}
+
+export interface VisitPageOptions {
+  onStatus?: (msg: string) => void;
+  /** When true, generic (non-specialized) pages are extracted with Defuddle —
+   *  a reader-mode-style article extractor that drops navigation, sidebars,
+   *  ads, and footers, returning clean Markdown. Far better than the default
+   *  block-walker for articles, docs, and blog posts. If Defuddle fails or
+   *  returns nothing, falls back to the generic extractor automatically.
+   *
+   *  Specialized pages (X, Reddit, Amazon, Scholar) always use their
+   *  purpose-built extractors, which already produce clean compact Markdown —
+   *  `clean` has no additional effect on them. */
+  clean?: boolean;
 }
 
 export async function googleSearch(
@@ -935,14 +1053,32 @@ export async function googleSearch(
     dynamicScroll: false,
     onStatus: status,
   });
+  return resolveHttpError(markdown, url);
+}
+
+// If the extraction returned an HTTP-error marker (set by runInPageSession
+// when the server responded 4xx/5xx), convert it to a SearchResult that
+// carries the status — so the tool layer can surface it as an error instead
+// of returning the error-page content as if it were the page itself.
+function resolveHttpError(markdown: string, url: string): SearchResult {
+  const httpErr = markdown.match(/^__HTTP_ERROR__: (\d{3})\s*(.*)$/);
+  if (httpErr) {
+    return {
+      markdown: "",
+      url,
+      httpStatus: Number(httpErr[1]),
+      httpStatusText: httpErr[2].trim(),
+    };
+  }
   return { markdown, url };
 }
 
 export async function visitPage(
   url: string,
-  onStatus?: (msg: string) => void
+  options?: VisitPageOptions
 ): Promise<SearchResult> {
-  const status = onStatus ?? (() => {});
+  const status = options?.onStatus ?? (() => {});
+  const clean = options?.clean ?? false;
   status(`Visiting: ${url}`);
 
   if (isXUrl(url)) {
@@ -957,7 +1093,7 @@ export async function visitPage(
       waitForTimeoutMs: 10_000,
       onStatus: status,
     });
-    return { markdown, url };
+    return resolveHttpError(markdown, url);
   }
 
   if (isRedditPostUrl(url)) {
@@ -972,7 +1108,7 @@ export async function visitPage(
       waitForTimeoutMs: 10_000,
       onStatus: status,
     });
-    return { markdown, url };
+    return resolveHttpError(markdown, url);
   }
 
   if (isAmazonProductUrl(url)) {
@@ -987,7 +1123,7 @@ export async function visitPage(
       waitForTimeoutMs: 10_000,
       onStatus: status,
     });
-    return { markdown, url };
+    return resolveHttpError(markdown, url);
   }
 
   if (isAmazonSearchUrl(url)) {
@@ -1002,7 +1138,7 @@ export async function visitPage(
       waitForTimeoutMs: 10_000,
       onStatus: status,
     });
-    return { markdown, url };
+    return resolveHttpError(markdown, url);
   }
 
   if (isScholarSearchUrl(url)) {
@@ -1017,7 +1153,24 @@ export async function visitPage(
       waitForTimeoutMs: 10_000,
       onStatus: status,
     });
-    return { markdown, url };
+    return resolveHttpError(markdown, url);
+  }
+
+  // Generic page. When `clean` is requested, use Defuddle (reader-mode article
+  // extraction) for far cleaner Markdown than the block-walker fallback. If
+  // Defuddle fails or returns nothing, the fallbackJs runs in the same tab.
+  if (clean) {
+    status("Using Defuddle for clean article extraction...");
+    const markdown = await runInPage({
+      url,
+      js: getDefuddleBundle() + "\n;" + DEFUDDLE_DRIVER_JS,
+      fallbackJs: EXTRACT_PAGE_JS,
+      clickConsent: true,
+      dynamicScroll: false,
+      initialWaitMs: 500,
+      onStatus: status,
+    });
+    return resolveHttpError(markdown, url);
   }
 
   const markdown = await runInPage({
@@ -1027,7 +1180,7 @@ export async function visitPage(
     dynamicScroll: true,
     onStatus: status,
   });
-  return { markdown, url };
+  return resolveHttpError(markdown, url);
 }
 
 export function shutdownChrome() {
@@ -1056,4 +1209,6 @@ export {
   AMAZON_PRODUCT_JS,
   AMAZON_SEARCH_JS,
   SCHOLAR_EXTRACT_JS,
+  DEFUDDLE_DRIVER_JS,
+  getDefuddleBundle,
 };

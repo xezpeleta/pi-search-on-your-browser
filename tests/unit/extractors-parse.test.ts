@@ -9,6 +9,7 @@ import {
   AMAZON_PRODUCT_JS,
   AMAZON_SEARCH_JS,
   SCHOLAR_EXTRACT_JS,
+  DEFUDDLE_DRIVER_JS,
 } from "../../src/chrome.ts";
 
 // Every extractor is a JS string built from a TypeScript template literal.
@@ -27,6 +28,7 @@ const extractors: Record<string, string> = {
   AMAZON_PRODUCT_JS,
   AMAZON_SEARCH_JS,
   SCHOLAR_EXTRACT_JS,
+  DEFUDDLE_DRIVER_JS,
 };
 
 for (const [name, js] of Object.entries(extractors)) {

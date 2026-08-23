@@ -100,9 +100,151 @@ fois" / "Citado por 1108" / "Zitiert von 1108").
 visit_page({ url: "https://scholar.google.com/scholar?q=transformer+attention+is+all+you+need" })
 ```
 
+### Optional `query` — keep your chat context small
+
+By default, `visit_page` returns the full rendered page as markdown. For large
+pages this can dump tens of thousands of characters into your conversation.
+Pass an optional **`query`** and the full page content is instead read by a
+configurable **subagent model** (a separate, cheap LLM call) that returns only
+the concise answer. The raw page markdown never enters your chat context —
+only the subagent's answer does.
+
+```
+visit_page({
+  url: "https://react.dev/reference/react/useState",
+  query: "What is the exact return value shape of useState?",
+})
+```
+
+- The page is fetched exactly as usual (your visible Chrome, all the
+  site-specific extractors above still run); only the *return value* changes.
+- The subagent **reuses your current Pi model by default** (no API keys to
+  set up — Pi's already-configured auth is used). Pin a different model with
+  `/browse` if you want a cheaper/faster one for summarization.
+- The footer shows a `🌐 model` indicator (the current or pinned model) and an
+  animated spinner while the subagent is answering.
+- The collapsed tool result shows the context savings, e.g.
+  `→ 92,340→1,187 chars · openai/gpt-4o-mini · 3.2s · react.dev`.
+
+This mirrors the subagent pattern from the
+[pi-vision-tool](https://github.com/xezpeleta/pi-vision-tool) extension.
+
+### Optional `clean` — clean article Markdown via Defuddle
+
+By default, `visit_page` on a generic (non-specialized) page uses a naive
+block-walker that includes navigation, sidebars, up to 80 "visible links",
+and truncates at 90 KB — noisy and token-heavy. Pass **`clean: true`** and the
+page is instead extracted with [**Defuddle**](https://github.com/kepano/defuddle)
+(the same library the [Obsidian Web Clipper](https://github.com/obsidianmd/obsidian-clipper)
+uses): a reader-mode-style article extractor that drops navigation, sidebars,
+ads, and footers, returning only the main article content as clean Markdown.
+
+```
+visit_page({
+  url: "https://react.dev/reference/react/useState",
+  clean: true,
+})
+```
+
+- Best for **articles, docs, and blog posts** — cleaner output and far fewer
+  tokens than the default.
+- **No effect on X, Reddit, Amazon, or Google Scholar URLs** — those already
+  use purpose-built extractors that produce clean compact Markdown.
+- If Defuddle fails or returns nothing (e.g. on a SPA with no article content),
+  it automatically falls back to the generic extractor in the same page load.
+- Combine with `query` for the best of both: `clean: true` gives the subagent
+  clean article text to read, and `query` returns only its concise answer —
+  ideal for large articles where you need just a fact or two.
+
+The Defuddle bundle (~500 KB, MIT-licensed, with Turndown bundled in) is
+vendored at `src/vendor/defuddle-browser.js` and injected into the page via a
+single CDP `Runtime.evaluate` call before the extraction driver runs. See
+[`src/vendor/README.md`](src/vendor/README.md) for build provenance.
+
+```
+visit_page({
+  url: "https://react.dev/reference/react/useState",
+  clean: true,
+  query: "What is the exact return value shape of useState?",
+})
+```
+
+### HTTP error detection (4xx / 5xx)
+
+`visit_page` monitors the page's HTTP response status via the CDP `Network`
+domain. When the server returns a **4xx or 5xx** status (e.g. a `404 Not Found`
+on a dead or renamed link — a common occurrence with Cloudflare blog posts,
+relocated docs, or hallucinated URLs), the tool returns an **`isError` result**
+with a clear message instead of silently extracting the error page's content:
+
+```
+HTTP 404 Not Found — The page does not exist at this URL — the content may
+have been moved, removed, or the URL may be incorrect. Try a different URL
+or search for the content.
+```
+
+This tells the model the URL is dead so it can try a different one or search
+again, rather than receiving "Page Not Found" gibberish as if it were page
+content. The collapsed tool result shows the status code, e.g.
+`→ HTTP 404 · 1.2s · blog.cloudflare.com`.
+
+Status-specific hints:
+
+| Status | Hint |
+|---|---|
+| **404** | Page doesn't exist — try a different URL or search |
+| **403** | Access denied — may be bot protection, auth, or paywall |
+| **429** | Rate limited — wait and retry |
+| **5xx** | Server error — retry shortly or try a different URL |
+
 ## Commands
 
-- `/google-search-kill` — Kill the Chrome browser
+- `/browse` — Configure the `visit_page` subagent (see below).
+- `/google-search-kill` — Kill the Chrome browser.
+
+### `/browse` — subagent configuration
+
+`visit_page`'s `query` mode uses a **subagent model** to read the page and
+return only a concise answer, keeping your chat context small. The subagent
+is a normal model from your Pi model registry (the same providers/models you
+already use), called via its OpenAI-compatible API using **Pi's already-
+configured auth** — no separate API keys to set up.
+
+**By default the subagent reuses your current session model** (the one you're
+chatting with). So `query` mode works with zero configuration. Use `/browse`
+only if you want to pin a different (e.g. cheaper/faster) model:
+
+```
+/browse                          # show current config
+/browse on                       # enable (default)
+/browse off                      # disable (query → error until re-enabled)
+/browse provider openai          # pin a provider (overrides current model)
+/browse model gpt-4o-mini        # pin a model (overrides current model)
+/browse max-tokens 2048          # max output tokens for the answer
+/browse reasoning-effort low     # off|minimal|low|medium|high|xhigh
+/browse clear                    # unpin → back to current model
+```
+
+Shorthand: `/browse provider openai` and `/browse model gpt-4o-mini` work
+without the `config` prefix.
+
+When no provider/model is pinned, the footer shows `🌐 <current-model>`;
+when pinned, it shows `🌐 provider/model`. Run `/browse` with no arguments
+to see the resolved configuration.
+
+Configuration is persisted to `~/.pi/agent/pi-search-on-your-browser.json` and
+also recorded in the session file, so changes survive across sessions and are
+restored when you reopen one.
+
+Environment variables (optional — override the current-model default at
+startup; the config file wins over these once set):
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `PI_BROWSE_PROVIDER` | — | pin a subagent provider (else: current model) |
+| `PI_BROWSE_MODEL` | — | pin a subagent model (else: current model) |
+| `PI_BROWSE_MAX_TOKENS` | `2048` | max output tokens for the answer |
+| `PI_BROWSE_REASONING_EFFORT` | `off` | thinking level for reasoning models |
 
 ## Requirements
 
@@ -123,11 +265,12 @@ The test suite runs without a browser, without a network, and with **zero runtim
 npm test
 ```
 
-Three layers of tests:
+Four layers of tests (55 total):
 
 - **`tests/unit/urls.test.ts`** — table-driven tests for the URL classifiers (`isXUrl`, `isRedditPostUrl`, `isAmazonProductUrl`, `isAmazonSearchUrl`, `isScholarSearchUrl`).
 - **`tests/unit/extractors-parse.test.ts`** — validates every extractor JS string (`X_EXTRACT_JS`, `REDDIT_EXTRACT_JS`, etc.) parses as valid JavaScript via `new Function()`. Catches template-literal escaping bugs (the `\n` vs real-newline class of errors) without a browser.
-- **`tests/unit/cdp-client.test.ts`** — tests `runInPageSession` (the navigate/waitForSelector/scroll/extract logic) against a fake `CDPLike` implementation. Includes the **regression test for the v0.5.1 bug**: `cdp.evaluate()` stringifies return values, so `String(false)` → `"false"` (truthy); the test asserts `waitForSelector` does *not* break on the first poll when the selector is absent.
+- **`tests/unit/cdp-client.test.ts`** — tests `runInPageSession` (the navigate/waitForSelector/scroll/extract logic) against a fake `CDPLike` implementation. Includes the **regression test for the v0.5.1 bug**: `cdp.evaluate()` stringifies return values, so `String(false)` → `"false"` (truthy); the test asserts `waitForSelector` does *not* break on the first poll when the selector is absent. Also tests the `fallbackJs` path (Defuddle → generic extractor fallback), HTTP error detection (4xx/5xx → `__HTTP_ERROR__` marker, extraction skipped, no fallback), and the vendored Defuddle bundle (non-empty, UMD, no Node-only deps, cached).
+- **`tests/unit/subagent.test.ts`** — tests the subagent layer used by `visit_page`'s `query` mode: config load/save/resolve, reasoning-level validation, reasoning-param building (mirrors the vision tool), context-window truncation with token-budget reservation, and message construction. No network calls — `callSubagentModel` is exercised indirectly via its pure helpers.
 
 ### Type-checking
 
@@ -153,6 +296,19 @@ The project uses `node:test` + `node:assert/strict` (built into Node.js) and nat
 | Dependencies | Zero npm deps (just Node.js built-ins) | Zero deps (just POSIX) |
 
 ## Changelog
+
+### v0.7.0
+
+- **New: `visit_page` optional `clean` parameter.** Pass `clean: true` and generic (non-specialized) pages are extracted with [Defuddle](https://github.com/kepano/defuddle) (the same library the [Obsidian Web Clipper](https://github.com/obsidianmd/obsidian-clipper) uses) — a reader-mode-style article extractor that drops navigation, sidebars, ads, and footers, returning only the main article content as clean Markdown. Far cleaner output and far fewer tokens than the default block-walker fallback. No effect on X/Reddit/Amazon/Scholar URLs (already clean). Falls back to the generic extractor automatically if Defuddle fails. Combine with `query` for the best of both: clean article text → subagent → concise answer.
+- **New: HTTP error detection.** `visit_page` now monitors the page's HTTP response status via the CDP `Network` domain. When the server returns a 4xx/5xx status (e.g. a `404` on a dead or renamed link — common with Cloudflare blog posts, relocated docs, or hallucinated URLs), the tool returns an `isError` result with a clear, status-specific hint instead of silently extracting the error page's content. Extraction is skipped entirely on HTTP errors (no wasted work, no fallback trigger). The collapsed tool result shows the status code (e.g. `→ HTTP 404 · 1.2s · blog.cloudflare.com`).
+- Vendored `src/vendor/defuddle-browser.js` (~500 KB, MIT-licensed, with Turndown bundled in) — a slim build of Defuddle without the `temml`/`mathml-to-latex` math libs (~300 KB saved). Injected into the page via a single CDP `Runtime.evaluate` call. See `src/vendor/README.md` for build provenance.
+- Added `fallbackJs` option to `runInPageSession` (same-tab fallback when the primary extractor returns an error marker or empty content — no second navigation).
+- **New: `visit_page` optional `query` parameter.** Pass a `query` and the full page content is read by a **subagent model** that returns only a concise answer — the raw page markdown never enters your chat context. Keeps large pages (docs, articles, product pages) from filling the conversation. Mirrors the subagent pattern from [pi-vision-tool](https://github.com/xezpeleta/pi-vision-tool). The page is still fetched with your visible Chrome (all site-specific extractors run); only the return value changes. **The subagent reuses your current Pi model by default** (via Pi's already-configured auth — no API keys to set up); pin a different model with `/browse provider`/`/browse model` if desired.
+- **New: `/browse` command** to configure the subagent (`provider`, `model`, `max-tokens`, `reasoning-effort`, `on`/`off`, `clear`, `show`). Config persists to `~/.pi/agent/pi-search-on-your-browser.json` and the session file. Footer shows a `🌐 provider/model` indicator and an animated spinner during subagent calls.
+- New env vars: `PI_BROWSE_PROVIDER`, `PI_BROWSE_MODEL`, `PI_BROWSE_MAX_TOKENS`, `PI_BROWSE_REASONING_EFFORT`.
+- New `src/subagent.ts` module (config management, reasoning-param building, context truncation, OpenAI-compatible model call) with a structural `SubagentModel` interface so it type-checks under the `src/`-scoped `tsconfig` without importing pi packages.
+- Added `tests/unit/subagent.test.ts` (17 tests) and 15 new tests in `tests/unit/cdp-client.test.ts` (fallbackJs path, HTTP error detection, Defuddle driver parse, vendored bundle integrity). Total test count: 58.
+- **Subagent uses the current Pi model by default** — `query` mode works with zero configuration: no `/browse provider`/`/browse model` setup, no separate API keys (Pi's already-configured auth is reused via `ctx.modelRegistry.getApiKeyAndHeaders()`, mirroring pi-vision-tool). `/browse` is now optional and only needed to pin a cheaper/faster model. `/browse` with no args shows the resolved model (current or pinned).
 
 ### v0.6.0
 

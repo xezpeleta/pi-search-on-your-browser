@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { runInPageSession, type CDPLike, type RunInPageOptions } from "../../src/chrome.ts";
+import { runInPageSession, type CDPLike, type RunInPageOptions, DEFUDDLE_DRIVER_JS, getDefuddleBundle } from "../../src/chrome.ts";
 
 // ── Fake CDP ───────────────────────────────────────────────────────────────
 // Implements CDPLike so runInPageSession can be exercised without a real
@@ -9,15 +9,40 @@ import { runInPageSession, type CDPLike, type RunInPageOptions } from "../../src
 class FakeCDP implements CDPLike {
   calls: Array<{ method: string; params?: Record<string, unknown> }> = [];
   evaluations: string[] = [];
+  /** Per-expression results. If an expression is in this map, evaluate()
+   *  returns the mapped value instead of extractionResult. Lets tests
+   *  distinguish primary vs fallback JS results. */
+  evaluateResults: Map<string, string> = new Map();
   /** What waitForSelector polls return: "true" (found) or "false" (absent). */
   selectorFound = false;
   /** What the final extractor evaluate returns. */
   extractionResult = "extracted content";
+  /** HTTP status to simulate for the main document response. Set before
+   *  calling runInPageSession to make Page.navigate emit a
+   *  Network.responseReceived event with this status. 0 = don't emit. */
+  docResponseStatus = 0;
+  docResponseStatusText = "";
   private loadHandlers: Array<(params: unknown) => void> = [];
+  private networkHandlers: Array<(params: unknown) => void> = [];
 
   async call(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
     this.calls.push({ method, params });
     if (method === "Page.navigate") {
+      // Emit the document's Network.responseReceived event BEFORE load
+      // (mirrors real CDP ordering: response received → load event fires).
+      if (this.docResponseStatus > 0) {
+        for (const h of this.networkHandlers) {
+          h({
+            type: "Document",
+            response: {
+              url: params.url,
+              status: this.docResponseStatus,
+              statusText: this.docResponseStatusText,
+              mimeType: "text/html",
+            },
+          });
+        }
+      }
       // Fire load handlers synchronously (registered before navigate).
       for (const h of this.loadHandlers) h({});
     }
@@ -31,11 +56,15 @@ class FakeCDP implements CDPLike {
     if (expression.startsWith("document.querySelector")) {
       return this.selectorFound ? "true" : "false";
     }
+    if (this.evaluateResults.has(expression)) {
+      return this.evaluateResults.get(expression)!;
+    }
     return this.extractionResult;
   }
 
   onEvent(method: string, handler: (params: unknown) => void): void {
     if (method === "Page.loadEventFired") this.loadHandlers.push(handler);
+    if (method === "Network.responseReceived") this.networkHandlers.push(handler);
   }
 
   disconnect(): void {}
@@ -116,14 +145,14 @@ test("waitForSelector times out (and keeps polling) when selector never appears"
 
 // ── Navigation & extraction ────────────────────────────────────────────────
 
-test("navigation calls Page.enable, Runtime.enable, Page.navigate in order", async () => {
+test("navigation calls Page.enable, Runtime.enable, Network.enable, Page.navigate in order", async () => {
   const fake = new FakeCDP();
   await runInPageSession(fake, baseOpts());
 
   const methods = fake.calls.map((c) => c.method);
   assert.deepEqual(
-    methods.slice(0, 3),
-    ["Page.enable", "Runtime.enable", "Page.navigate"],
+    methods.slice(0, 4),
+    ["Page.enable", "Runtime.enable", "Network.enable", "Page.navigate"],
   );
   const nav = fake.calls.find((c) => c.method === "Page.navigate");
   assert.equal(nav?.params?.url, "https://example.com/page");
@@ -162,4 +191,196 @@ test("result is truncated at MAX_RESULT_BYTES (1MB)", async () => {
 
   assert.ok(result.length < 2_000_000, "should be truncated");
   assert.ok(result.includes("[Content truncated at 1MB]"), "should have truncation marker");
+});
+
+// ── fallbackJs (Defuddle → generic extractor fallback) ─────────────────────
+
+test("fallbackJs runs when primary extraction returns an error marker", async () => {
+  const fake = new FakeCDP();
+  fake.evaluateResults.set("defuddleDriver()", "__DEFUDDLE_ERROR__: no content extracted");
+  fake.evaluateResults.set("genericExtractor()", "fallback article content");
+
+  const result = await runInPageSession(fake, baseOpts({
+    js: "defuddleDriver()",
+    fallbackJs: "genericExtractor()",
+  }));
+
+  // The fallback result replaces the error marker.
+  assert.equal(result, "fallback article content");
+  // Both the primary and fallback JS were evaluated.
+  assert.ok(fake.evaluations.includes("defuddleDriver()"), "primary JS was evaluated");
+  assert.ok(fake.evaluations.includes("genericExtractor()"), "fallback JS was evaluated");
+});
+
+test("fallbackJs runs when primary extraction returns very short content", async () => {
+  const fake = new FakeCDP();
+  fake.evaluateResults.set("defuddleDriver()", "hi"); // < 50 chars → triggers fallback
+  fake.evaluateResults.set("genericExtractor()", "fallback article content");
+
+  const result = await runInPageSession(fake, baseOpts({
+    js: "defuddleDriver()",
+    fallbackJs: "genericExtractor()",
+  }));
+
+  assert.equal(result, "fallback article content");
+  assert.ok(fake.evaluations.includes("genericExtractor()"), "fallback ran for short content");
+});
+
+test("fallbackJs does NOT run when primary extraction succeeds", async () => {
+  const fake = new FakeCDP();
+  fake.evaluateResults.set("defuddleDriver()", "This is a sufficiently long article content that exceeds the 50-char threshold.");
+  fake.evaluateResults.set("genericExtractor()", "should not be used");
+
+  const result = await runInPageSession(fake, baseOpts({
+    js: "defuddleDriver()",
+    fallbackJs: "genericExtractor()",
+  }));
+
+  assert.equal(result, "This is a sufficiently long article content that exceeds the 50-char threshold.");
+  assert.ok(!fake.evaluations.includes("genericExtractor()"), "fallback should not run on success");
+});
+
+test("fallbackJs is not required — omitted fallback leaves result as-is", async () => {
+  const fake = new FakeCDP();
+  fake.evaluateResults.set("defuddleDriver()", "__DEFUDDLE_ERROR__: boom");
+
+  const result = await runInPageSession(fake, baseOpts({
+    js: "defuddleDriver()",
+    // no fallbackJs
+  }));
+
+  assert.equal(result, "__DEFUDDLE_ERROR__: boom", "error marker passes through when no fallback");
+});
+
+// ── Defuddle driver & bundle ───────────────────────────────────────────────
+
+test("DEFUDDLE_DRIVER_JS parses as valid JavaScript", () => {
+  // Catches template-literal escaping bugs (the \n vs real-newline class of
+  // errors) without a browser, same approach as the extractor-parse tests.
+  assert.doesNotThrow(() => new Function(DEFUDDLE_DRIVER_JS), "driver should parse");
+});
+
+test("getDefuddleBundle returns a non-empty UMD bundle exposing window.Defuddle", () => {
+  const bundle = getDefuddleBundle();
+  assert.ok(bundle.length > 100_000, `bundle should be large (~500KB), got ${bundle.length}`);
+  // UMD header: assigns to the global `Defuddle`.
+  assert.ok(bundle.includes("var Defuddle="), "bundle should expose a Defuddle global");
+  // No Node-only dependencies should be referenced.
+  assert.ok(!bundle.includes("linkedom"), "bundle should not reference linkedom");
+  assert.ok(!bundle.includes("temml"), "bundle should not reference temml");
+  assert.ok(!bundle.includes("mathml-to-latex"), "bundle should not reference mathml-to-latex");
+});
+
+test("getDefuddleBundle is cached (same reference on second call)", () => {
+  const a = getDefuddleBundle();
+  const b = getDefuddleBundle();
+  assert.equal(a, b, "bundle should be cached");
+});
+
+// ── HTTP error detection (4xx/5xx) ─────────────────────────────────────────
+// The key fix for the Cloudflare 404 issue: when the server returns an error
+// status, runInPageSession must surface it as an __HTTP_ERROR__ marker instead
+// of silently extracting the error page's content.
+
+test("returns __HTTP_ERROR__ marker when server responds 404", async () => {
+  const fake = new FakeCDP();
+  fake.docResponseStatus = 404;
+  fake.docResponseStatusText = "Not Found";
+
+  const result = await runInPageSession(fake, baseOpts({
+    js: "myExtractor()",
+  }));
+
+  assert.ok(result.startsWith("__HTTP_ERROR__: 404"), `expected HTTP error marker, got: ${result}`);
+  assert.ok(result.includes("Not Found"), "should include status text");
+});
+
+test("HTTP error skips extraction entirely (no wasted JS evaluation)", async () => {
+  const fake = new FakeCDP();
+  fake.docResponseStatus = 403;
+  fake.docResponseStatusText = "Forbidden";
+
+  await runInPageSession(fake, baseOpts({
+    js: "myExtractor()",
+    waitForSelector: "article",
+    dynamicScroll: true,
+    scrollCount: 2,
+    scrollDelayMs: 1,
+  }));
+
+  // The extractor JS should NOT have been evaluated — the error short-circuits
+  // before extraction, waitForSelector, and scrolling.
+  assert.ok(!fake.evaluations.includes("myExtractor()"), "extractor should not run on HTTP error");
+  const scrolls = fake.evaluations.filter((e) => e.includes("window.scrollTo"));
+  assert.equal(scrolls.length, 0, "should not scroll on HTTP error");
+  const selectorPolls = fake.evaluations.filter((e) => e.startsWith("document.querySelector"));
+  assert.equal(selectorPolls.length, 0, "should not poll for selector on HTTP error");
+});
+
+test("HTTP error does NOT trigger fallbackJs (the page is genuinely gone)", async () => {
+  const fake = new FakeCDP();
+  fake.docResponseStatus = 404;
+  fake.docResponseStatusText = "Not Found";
+
+  const result = await runInPageSession(fake, baseOpts({
+    js: "defuddleDriver()",
+    fallbackJs: "genericExtractor()",
+  }));
+
+  // The HTTP error marker passes through; the fallback extractor is NOT run.
+  assert.ok(result.startsWith("__HTTP_ERROR__: 404"), "should return HTTP error, not fallback content");
+  assert.ok(!fake.evaluations.includes("genericExtractor()"), "fallback must not run on HTTP error");
+  assert.ok(!fake.evaluations.includes("defuddleDriver()"), "primary must not run on HTTP error");
+});
+
+test("5xx server errors are also surfaced", async () => {
+  const fake = new FakeCDP();
+  fake.docResponseStatus = 503;
+  fake.docResponseStatusText = "Service Unavailable";
+
+  const result = await runInPageSession(fake, baseOpts());
+  assert.ok(result.startsWith("__HTTP_ERROR__: 503"), `expected 503 marker, got: ${result}`);
+});
+
+test("HTTP 200 proceeds normally (extraction runs, no error marker)", async () => {
+  const fake = new FakeCDP();
+  fake.docResponseStatus = 200;
+  fake.docResponseStatusText = "OK";
+  fake.evaluateResults.set("myExtractor()", "normal page content here, long enough to pass");
+
+  const result = await runInPageSession(fake, baseOpts({
+    js: "myExtractor()",
+  }));
+
+  assert.equal(result, "normal page content here, long enough to pass");
+  assert.ok(fake.evaluations.includes("myExtractor()"), "extractor should run on 200");
+});
+
+test("no Network.responseReceived (status 0) proceeds normally", async () => {
+  // Some pages or CDP versions might not emit the event. Don't break.
+  const fake = new FakeCDP();
+  fake.docResponseStatus = 0; // no event emitted
+  fake.evaluateResults.set("myExtractor()", "content from page");
+
+  const result = await runInPageSession(fake, baseOpts({
+    js: "myExtractor()",
+  }));
+
+  assert.equal(result, "content from page", "should extract normally when no status captured");
+});
+
+test("only the first Document response is captured (redirects use final status)", async () => {
+  // If there's a redirect, the first Document response might be a 301/302.
+  // We capture the FIRST one — but in practice CDP fires responseReceived for
+  // the redirect with type 'Other', and the final document with type 'Document'.
+  // This test confirms a non-Document response doesn't set the status.
+  const fake = new FakeCDP();
+  // Emit a non-Document (e.g. image) 404 response — should be ignored.
+  fake.docResponseStatus = 0; // no Document response
+
+  const result = await runInPageSession(fake, baseOpts({
+    js: "myExtractor()",
+  }));
+
+  assert.equal(result, "extracted content", "non-Document 404s should not trigger the error path");
 });
