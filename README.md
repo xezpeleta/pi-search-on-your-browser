@@ -1,11 +1,21 @@
 # pi-search-on-your-browser
 
-Search Google in your **own visible Chrome browser** — the [ds4-agent](https://github.com/antirez/ds4) style by @antirez.
+Search Google and browse the web in your **own visible Chrome browser** — no API keys, no headless detection, your real cookies and login sessions. A [Pi](https://github.com/earendil-works/pi-coding-agent) extension that gives your coding agent two tools: `google_search` and `visit_page`.
+
+## Highlights
+
+- 🔍 **Google search** via your real browser — returns compact markdown links + snippets
+- 🌐 **`visit_page`** fetches any URL as markdown using your visible Chrome (authenticated everywhere — paywalled sites, X, Reddit, Amazon, GitHub)
+- 🧹 **`clean` extraction** — reader-mode markdown via [Defuddle](https://github.com/kepano/defuddle) (the Obsidian Web Clipper library); drops nav/sidebars/ads, ~47% fewer tokens on docs pages
+- 🤖 **`query` subagent** — pass a question, get only the concise answer back (the full page never enters your chat context); reuses your current Pi model by default, **no setup needed**
+- ⚠️ **HTTP error detection** — dead links return a clear `isError` with status-specific hints instead of error-page gibberish
+- 🐦 **Site-specific extractors** — X/Twitter (structured tweets), Reddit (posts + threaded comments), Amazon (products + search), Google Scholar (papers)
+- 🚫 **Zero API keys, zero runtime npm dependencies** — uses your existing browser; nothing to sign up for
 
 > "If you need AI to do a search for you in the real world, ds4-agent is basically SOTA, because it can access the web sites without any limitations given that it uses your local Chrome browser (no, not in headless mode, that's the trick...)"
 > — [@antirez on X](https://x.com/antirez/status/2066233392916525379), 2026-06-14
 
-**This Pi package uses exactly the same approach:** launches your visible Chrome (not headless), navigates to google.com via CDP, runs JavaScript extractors in the page, and returns compact Markdown results. No API keys. No headless detection. Your real browser fingerprint, cookies, and login sessions.
+Inspired by the [ds4-agent](https://github.com/antirez/ds4) approach by @antirez: a visible Chrome window (not headless) driven via the Chrome DevTools Protocol, so you're authenticated everywhere — paywalled sites, Twitter, GitHub, Google — because it's **your real browser**.
 
 ## How it works
 
@@ -13,10 +23,8 @@ When you call `google_search` or `visit_page`:
 
 1. A **visible Chrome window** opens (not headless) with a dedicated profile at `~/.pi-search-browser/`
 2. Chrome DevTools Protocol (CDP) is used to navigate and extract content
-3. JavaScript runs in the page to extract readable markdown
+3. JavaScript runs in the page to extract readable markdown — site-specific extractors for X, Reddit, Amazon, Scholar; [Defuddle](https://github.com/kepano/defuddle) reader-mode for `clean`; generic block-walker as fallback
 4. Chrome stays alive between calls for speed (kill with `/google-search-kill`)
-
-This means you're authenticated everywhere — paywalled sites, Twitter, GitHub, Google — because it's **your real browser**.
 
 ## Install
 
@@ -27,7 +35,7 @@ pi install npm:pi-search-on-your-browser
 Or from git:
 
 ```bash
-pi install git:github.com/xezpeleta/pi-search-on-your-browser@v0.1.0
+pi install git:github.com/xezpeleta/pi-search-on-your-browser@v0.7.0
 ```
 
 ## Tools
@@ -42,10 +50,15 @@ google_search({ query: "TypeScript 5.7 release notes" })
 
 ### `visit_page`
 
-Visit any URL and get the page content as markdown.
+Visit any URL and get the page content as markdown. Two optional parameters keep large pages from filling your conversation:
+
+- **`query`** — delegate to a subagent model that returns only a concise answer (the raw page never enters your context; reuses your current model by default). [See below →](#optional-query--keep-your-chat-context-small)
+- **`clean`** — extract with Defuddle reader-mode (drops nav/sidebars/ads; ~47% fewer tokens). [See below →](#optional-clean--clean-article-markdown-via-defuddle)
 
 ```
 visit_page({ url: "https://example.com/article" })
+visit_page({ url: "https://react.dev/reference/react/useState", query: "What is the return shape of useState?" })
+visit_page({ url: "https://react.dev/reference/react/useState", clean: true })
 ```
 
 **X (Twitter) support:** Any `x.com` / `twitter.com` URL — a search results
