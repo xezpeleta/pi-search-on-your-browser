@@ -4,13 +4,13 @@ Search Google and browse the web in your **own visible Chrome browser** — no A
 
 ## Highlights
 
-- 🔍 **Google search** via your real browser — returns compact markdown links + snippets
-- 🌐 **`visit_page`** fetches any URL as markdown using your visible Chrome (authenticated everywhere — paywalled sites, X, Reddit, Amazon, GitHub)
-- 🧹 **`clean` extraction** — reader-mode markdown via [Defuddle](https://github.com/kepano/defuddle) (the Obsidian Web Clipper library); drops nav/sidebars/ads, ~47% fewer tokens on docs pages
-- 🤖 **`query` subagent** — pass a question, get only the concise answer back (the full page never enters your chat context); reuses your current Pi model by default, **no setup needed**
-- ⚠️ **HTTP error detection** — dead links return a clear `isError` with status-specific hints instead of error-page gibberish
-- 🐦 **Site-specific extractors** — X/Twitter (structured tweets), Reddit (posts + threaded comments), Amazon (products + search), Google Scholar (papers)
-- 🚫 **Zero API keys, zero runtime npm dependencies** — uses your existing browser; nothing to sign up for
+- **Google search** via your real browser — returns compact markdown links + snippets
+- **`visit_page`** fetches any URL as markdown using your visible Chrome (authenticated everywhere — paywalled sites, X, Reddit, Amazon, GitHub)
+- **`clean` extraction** — reader-mode markdown via [Defuddle](https://github.com/kepano/defuddle) (the Obsidian Web Clipper library); drops nav/sidebars/ads, ~47% fewer tokens on docs pages
+- **`query` subagent** — pass a question, get only the concise answer back (the full page never enters your chat context); reuses your current Pi model by default, **no setup needed**
+- **HTTP error detection** — dead links return a clear `isError` with status-specific hints instead of error-page gibberish
+- **Site-specific extractors** — X/Twitter (structured tweets), Reddit (posts + threaded comments), Amazon (products + search), Google Scholar (papers)
+- **Zero API keys, zero runtime npm dependencies** — uses your existing browser; nothing to sign up for
 
 > "If you need AI to do a search for you in the real world, ds4-agent is basically SOTA, because it can access the web sites without any limitations given that it uses your local Chrome browser (no, not in headless mode, that's the trick...)"
 > — [@antirez on X](https://x.com/antirez/status/2066233392916525379), 2026-06-14
@@ -52,8 +52,8 @@ google_search({ query: "TypeScript 5.7 release notes" })
 
 Visit any URL and get the page content as markdown. Two optional parameters keep large pages from filling your conversation:
 
-- **`query`** — delegate to a subagent model that returns only a concise answer (the raw page never enters your context; reuses your current model by default). [See below →](#optional-query--keep-your-chat-context-small)
-- **`clean`** — extract with Defuddle reader-mode (drops nav/sidebars/ads; ~47% fewer tokens). [See below →](#optional-clean--clean-article-markdown-via-defuddle)
+- **`query`** — delegate to a subagent model that returns only a concise answer (the raw page never enters your context; reuses your current model by default). [See below.](#optional-query--keep-your-chat-context-small)
+- **`clean`** — extract with Defuddle reader-mode (drops nav/sidebars/ads; ~47% fewer tokens). [See below.](#optional-clean--clean-article-markdown-via-defuddle)
 
 ```
 visit_page({ url: "https://example.com/article" })
