@@ -210,6 +210,18 @@ async function launchChrome(): Promise<void> {
     "--disable-sync",
     "--password-store=basic",
     "--mute-audio",
+    // Keep non-active tabs rendering at full speed. Tool tabs are opened in
+    // the background (Target.createTarget { background: true }) to avoid
+    // stealing focus, but Chrome otherwise suspends the renderer of background
+    // tabs — which makes window.scrollTo()/scrollBy() a no-op for triggering
+    // lazy-loaded content (infinite scroll, lazy images, GitHub's deferred
+    // sections). The async self-scrolling extractors (X/Reddit/Amazon) hit the
+    // same wall. These flags keep the renderer alive so scrolling works even
+    // when the tab isn't active; the bringToFront option (below) handles the
+    // remaining visibility-dependent cases.
+    "--disable-background-timer-throttling",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-renderer-backgrounding",
     "about:blank",
   ];
 
@@ -300,6 +312,14 @@ interface RunInPageOptions {
    *  an error marker or very short content. Avoids a second navigation when
    *  the primary extractor (e.g. Defuddle) fails on a page. */
   fallbackJs?: string;
+  /** When true, call CDP `Page.bringToFront` after navigation so the tab
+   *  becomes the active tab and Chrome resumes its renderer. Needed for any
+   *  path that scrolls — `dynamicScroll` (generic pages) or the async
+   *  self-scrolling extractors (X/Reddit/Amazon) — because background tabs
+   *  don't paint and scroll-triggered lazy loading never fires without it.
+   *  Default false so non-scrolling pages (Google search, Scholar, Defuddle)
+   *  don't steal focus. */
+  bringToFront?: boolean;
   onStatus: (msg: string) => void;
 }
 
@@ -367,6 +387,23 @@ async function runInPageSession(cdp: CDPLike, opts: RunInPageOptions): Promise<s
   if (gotDocResponse && docResponse.status >= 400) {
     onStatus(`HTTP ${docResponse.status} ${docResponse.statusText}`.trim());
     return `__HTTP_ERROR__: ${docResponse.status} ${docResponse.statusText}`.trim();
+  }
+
+  // Make this the active tab before any scrolling. Tool tabs open in the
+  // background; Chrome suspends rendering for non-active tabs, so
+  // window.scrollTo() (dynamicScroll, below) and the self-scrolling inside
+  // the async extractors would otherwise not trigger lazy-loaded content —
+  // the "Scrolling for dynamic content..." step silently did nothing until
+  // you manually clicked the tab. Skipped for HTTP errors (dead pages) and
+  // when bringToFront is unset (Google/Scholar/Defuddle: no scrolling).
+  if (opts.bringToFront) {
+    onStatus("Activating tab for scrolling...");
+    try {
+      await cdp.call("Page.bringToFront");
+    } catch {
+      // Non-fatal: some targets reject it; the launch flags above still help.
+    }
+    await sleep(150); // let the renderer resume before scrolling/extracting
   }
 
   if (clickConsent) {
@@ -489,6 +526,7 @@ async function extractVia(
     dynamicScroll?: boolean;
     initialWaitMs?: number;
     fallbackJs?: string;
+    bringToFront?: boolean;
   } = {},
 ): Promise<SearchResult> {
   if (msg) status(msg);
@@ -501,6 +539,7 @@ async function extractVia(
     waitForSelector: opts.waitForSelector,
     waitForTimeoutMs: opts.waitForTimeoutMs ?? 10_000,
     fallbackJs: opts.fallbackJs,
+    bringToFront: opts.bringToFront ?? false,
     onStatus: status,
   });
   return resolveHttpError(markdown, url);
@@ -544,22 +583,22 @@ export async function visitPage(
 
   if (isXUrl(url)) {
     return extractVia(url, status, "Detected X (Twitter) \u2014 using tweet extractor...",
-      X_EXTRACT_JS, { waitForSelector: 'article[data-testid="tweet"]' });
+      X_EXTRACT_JS, { waitForSelector: 'article[data-testid="tweet"]', bringToFront: true });
   }
 
   if (isRedditPostUrl(url)) {
     return extractVia(url, status, "Detected Reddit post \u2014 using comment extractor...",
-      REDDIT_EXTRACT_JS, { waitForSelector: "shreddit-comment, shreddit-post" });
+      REDDIT_EXTRACT_JS, { waitForSelector: "shreddit-comment, shreddit-post", bringToFront: true });
   }
 
   if (isAmazonProductUrl(url)) {
     return extractVia(url, status, "Detected Amazon product page \u2014 using product extractor...",
-      AMAZON_PRODUCT_JS, { waitForSelector: "#productTitle, #titleSection" });
+      AMAZON_PRODUCT_JS, { waitForSelector: "#productTitle, #titleSection", bringToFront: true });
   }
 
   if (isAmazonSearchUrl(url)) {
     return extractVia(url, status, "Detected Amazon search \u2014 using listing extractor...",
-      AMAZON_SEARCH_JS, { waitForSelector: '[data-component-type="s-search-result"]' });
+      AMAZON_SEARCH_JS, { waitForSelector: '[data-component-type="s-search-result"]', bringToFront: true });
   }
 
   if (isScholarSearchUrl(url)) {
@@ -577,7 +616,7 @@ export async function visitPage(
   }
 
   return extractVia(url, status, "", EXTRACT_PAGE_JS,
-    { clickConsent: true, dynamicScroll: true, initialWaitMs: 0 });
+    { clickConsent: true, dynamicScroll: true, initialWaitMs: 0, bringToFront: true });
 }
 
 export function shutdownChrome() {
