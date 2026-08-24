@@ -129,6 +129,10 @@ visit_page({
 })
 ```
 
+- **`query` is not a search** — it only reads the single page at the `url` you
+  pass to `visit_page`. It does not search a whole site or the web, and it is
+  not a replacement for `google_search`. Use `google_search` to find pages,
+  then `visit_page` + `query` to pull specific facts from one of them.
 - The page is fetched exactly as usual (your visible Chrome, all the
   site-specific extractors above still run); only the *return value* changes.
 - The subagent **reuses your current Pi model by default** (no API keys to
