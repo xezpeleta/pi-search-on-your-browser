@@ -194,6 +194,47 @@ async function isChromeAlive(): Promise<boolean> {
   }
 }
 
+/** Command-line flags used to launch the visible Chrome instance. Exported
+ *  so the presence of individual flags (e.g. the backgrounding/occlusion
+ *  flags that keep the renderer alive in background tabs/windows) can be
+ *  asserted by unit tests without spawning a real Chrome. */
+export const CHROME_LAUNCH_ARGS: readonly string[] = [
+  `--remote-debugging-port=${CDP_PORT}`,
+  "--remote-allow-origins=*",
+  `--user-data-dir=${PROFILE_DIR}`,
+  "--no-first-run",
+  "--no-default-browser-check",
+  "--disable-sync",
+  "--password-store=basic",
+  "--mute-audio",
+  // Keep non-active tabs rendering at full speed. Tool tabs are opened in
+  // the background (Target.createTarget { background: true }) to avoid
+  // stealing focus, but Chrome otherwise suspends the renderer of background
+  // tabs — which makes window.scrollTo()/scrollBy() a no-op for triggering
+  // lazy-loaded content (infinite scroll, lazy images, GitHub's deferred
+  // sections). The async self-scrolling extractors (X/Reddit/Amazon) hit the
+  // same wall. These flags keep the renderer alive so scrolling works even
+  // when the tab isn't active; the bringToFront option (below) handles the
+  // remaining visibility-dependent cases.
+  "--disable-background-timer-throttling",
+  "--disable-backgrounding-occluded-windows",
+  "--disable-renderer-backgrounding",
+  // Chrome's native window-occlusion detection (CalculateNativeWinOcclusion)
+  // can fully freeze the renderer when the Chrome *window* is behind another
+  // window or unfocused — even with the three flags above. This shows up as
+  // a full 30s Runtime.evaluate timeout (the renderer stops responding to
+  // CDP entirely), not just missed lazy loads. It is especially severe on
+  // GNOME Wayland, where we cannot programmatically focus/activate the
+  // Chrome window (xdotool/wmctrl are X11-only, and GNOME Shell's D-Bus
+  // window APIs are access-denied). Disabling the feature keeps the renderer
+  // alive regardless of window visibility/focus, so scrolling + extraction
+  // work with Chrome in the background. Without this flag, visit_page on
+  // lazy-load pages (e.g. github.com) hangs unless the user manually focuses
+  // the Chrome window first.
+  "--disable-features=CalculateNativeWinOcclusion",
+  "about:blank",
+];
+
 async function launchChrome(): Promise<void> {
   mkdirSync(PROFILE_DIR, { recursive: true });
 
@@ -201,29 +242,7 @@ async function launchChrome(): Promise<void> {
 
   console.error(`[pi-search] Launching visible Chrome at ${chromePath}`);
 
-  const args = [
-    `--remote-debugging-port=${CDP_PORT}`,
-    "--remote-allow-origins=*",
-    `--user-data-dir=${PROFILE_DIR}`,
-    "--no-first-run",
-    "--no-default-browser-check",
-    "--disable-sync",
-    "--password-store=basic",
-    "--mute-audio",
-    // Keep non-active tabs rendering at full speed. Tool tabs are opened in
-    // the background (Target.createTarget { background: true }) to avoid
-    // stealing focus, but Chrome otherwise suspends the renderer of background
-    // tabs — which makes window.scrollTo()/scrollBy() a no-op for triggering
-    // lazy-loaded content (infinite scroll, lazy images, GitHub's deferred
-    // sections). The async self-scrolling extractors (X/Reddit/Amazon) hit the
-    // same wall. These flags keep the renderer alive so scrolling works even
-    // when the tab isn't active; the bringToFront option (below) handles the
-    // remaining visibility-dependent cases.
-    "--disable-background-timer-throttling",
-    "--disable-backgrounding-occluded-windows",
-    "--disable-renderer-backgrounding",
-    "about:blank",
-  ];
+  const args = CHROME_LAUNCH_ARGS;
 
   chromeProcess = spawn(chromePath, args, {
     stdio: ["ignore", "ignore", "ignore"],

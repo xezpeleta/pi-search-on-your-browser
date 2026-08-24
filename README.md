@@ -219,6 +219,22 @@ Status-specific hints:
 - `/browse` — Configure the `visit_page` subagent (see below).
 - `/google-search-kill` — Kill the Chrome browser.
 
+### Troubleshooting: Chrome must be relaunched after upgrading
+
+`visit_page` drives a **visible Chrome** that `pi-search-on-your-browser`
+launches once and keeps alive across tool calls. If you upgrade the package
+(e.g. a new version adds or changes Chrome launch flags), the **already-
+running Chrome is reused as-is** — it was started with the *old* flags, so
+the new ones don't take effect until Chrome is relaunched.
+
+Symptoms of a stale Chrome after an upgrade: `visit_page` hangs for ~30s on
+lazy-load pages (e.g. `github.com`) and fails with `CDP call timeout:
+Runtime.evaluate` when Chrome's window is in the background.
+
+Fix: run `/google-search-kill` (or `pkill -f remote-debugging-port=9322`)
+once after upgrading. The next `visit_page` call relaunches Chrome with the
+current flags. Restarting your Pi session also works.
+
 ### `/browse` — subagent configuration
 
 `visit_page`'s `query` mode uses a **subagent model** to read the page and
@@ -313,6 +329,18 @@ The project uses `node:test` + `node:assert/strict` (built into Node.js) and nat
 | Dependencies | Zero npm deps (just Node.js built-ins) | Zero deps (just POSIX) |
 
 ## Changelog
+
+### v0.7.6
+
+- **Fix: `visit_page` hung (~30s timeout) when Chrome's window was in the background.** Even with v0.7.4's `bringToFront` + background-throttling flags, Chrome's **native window-occlusion detection** (`CalculateNativeWinOcclusion`) could fully freeze the renderer when the Chrome *window* was behind another window or unfocused — `Runtime.evaluate` then timed out entirely (not just missed lazy loads). This was especially severe on **GNOME Wayland**, where the Chrome window can't be programmatically focused (xdotool/wmctrl are X11-only; GNOME Shell's D-Bus window APIs are access-denied). Added `--disable-features=CalculateNativeWinOcclusion` to the Chrome launch flags so the renderer stays alive regardless of window visibility/focus. Verified: `visit_page` on `github.com/antirez/ds4` (heavy lazy-loaded file tree) now scrapes the full page with Chrome in the background. The launch flags were also refactored into an exported `CHROME_LAUNCH_ARGS` constant (with 2 new regression tests asserting the throttling + occlusion flags are present). README gained a troubleshooting note: Chrome must be relaunched (`/google-search-kill`) after upgrading for new launch flags to take effect.
+
+### v0.7.5
+
+- **Docs: clarified that `visit_page`'s `query` parameter is not a search.** Agents were confusing `query` with a search tool — expecting it to search a whole website or replace `google_search`. In reality `query` only reads the single page at the URL passed to `visit_page` and answers a question about that page's content. Made this explicit and prominent across every agent-facing surface (tool `description`, `promptSnippet`, `promptGuidelines`, the `query` parameter's own `description`) plus the README, with the correct workflow spelled out: `google_search` to discover pages → `visit_page` + `query` to extract specific facts from one.
+
+### v0.7.4
+
+- **Fix: dynamic scrolling didn't trigger lazy-loaded content on background tabs.** Tool tabs open with `background: true` (to avoid stealing focus), but Chrome suspends the renderer of non-active tabs, so `window.scrollTo()`/`scrollBy()` were a no-op — the "Scrolling for dynamic content..." step silently did nothing until you manually clicked the tab. Two-layer fix: (1) added 3 Chrome launch flags (`--disable-background-timer-throttling`, `--disable-backgrounding-occluded-windows`, `--disable-renderer-backgrounding`) to keep background-tab renderers alive; (2) added a `bringToFront` option that calls CDP `Page.bringToFront` after navigation (before scrolling/extraction) to activate the tab. `bringToFront: true` is enabled for the 5 scrolling paths (generic pages incl. GitHub, X, Reddit, Amazon product, Amazon search) and skipped for non-scrolling paths (Google search, Scholar, Defuddle clean) and HTTP errors. Added 5 regression tests.
 
 ### v0.7.3
 

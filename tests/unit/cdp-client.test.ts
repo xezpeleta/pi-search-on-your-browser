@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { runInPageSession, type CDPLike, type RunInPageOptions } from "../../src/chrome.ts";
+import { runInPageSession, CHROME_LAUNCH_ARGS, type CDPLike, type RunInPageOptions } from "../../src/chrome.ts";
 import { DEFUDDLE_DRIVER_JS, getDefuddleBundle } from "../../src/extractors.ts";
 
 // ── Fake CDP ───────────────────────────────────────────────────────────────
@@ -477,4 +477,33 @@ test("only the first Document response is captured (redirects use final status)"
   }));
 
   assert.equal(result, "extracted content", "non-Document 404s should not trigger the error path");
+});
+
+// ── Chrome launch flags (keep renderer alive in background) ───────────────
+// These flags are the difference between visit_page working with Chrome in
+// the background (window behind the terminal) vs hanging for 30s. They are
+// asserted here so a future refactor doesn't silently drop one.
+
+test("CHROME_LAUNCH_ARGS keeps background-tab renderers alive", () => {
+  // Without these, Chrome suspends the renderer of non-active tabs, making
+  // window.scrollTo() a no-op for triggering lazy-loaded content.
+  assert.ok(CHROME_LAUNCH_ARGS.includes("--disable-background-timer-throttling"),
+    "should disable background timer throttling");
+  assert.ok(CHROME_LAUNCH_ARGS.includes("--disable-backgrounding-occluded-windows"),
+    "should disable backgrounding of occluded windows");
+  assert.ok(CHROME_LAUNCH_ARGS.includes("--disable-renderer-backgrounding"),
+    "should disable renderer backgrounding");
+});
+
+test("CHROME_LAUNCH_ARGS disables native window-occlusion detection", () => {
+  // CalculateNativeWinOcclusion can fully freeze the renderer when the Chrome
+  // *window* is behind another window or unfocused — even with the three
+  // flags above. This shows up as a full 30s Runtime.evaluate timeout, not
+  // just missed lazy loads. Especially severe on GNOME Wayland where the
+  // window cannot be programmatically focused. This is the single most
+  // important flag for background-window scraping.
+  const flag = CHROME_LAUNCH_ARGS.find((a) => a.startsWith("--disable-features="));
+  assert.ok(flag, "should pass a --disable-features flag");
+  assert.ok(flag!.includes("CalculateNativeWinOcclusion"),
+    "--disable-features should include CalculateNativeWinOcclusion");
 });
