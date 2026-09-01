@@ -9,7 +9,7 @@
  *
  * Only the model's answer comes back to the chat context — the full page
  * markdown is consumed by the subagent internally but never enters the
- * conversation. This keeps visit_page results small when a `query` is supplied.
+ * conversation. This keeps visit_page results small when `summary` is used.
  *
  * This module is deliberately free of `@earendil-works/*` imports so it stays
  * type-checkable under `tsc --noEmit` (which only resolves Node built-ins for
@@ -90,18 +90,25 @@ export function configPath(): string {
 // ---------------------------------------------------------------------------
 export const SUBAGENT_SYSTEM_PROMPT = [
   "You are an expert web research assistant.",
-  "You are given the markdown content of a web page and a user's question about it.",
+  "You are given the markdown content of a web page. Produce a comprehensive but",
+  "concise summary of ALL the useful information the page actually contains.",
   "",
   "Guidelines:",
-  "- Answer the user's question using ONLY the provided page content.",
-  "- If the answer is not present in the content, say so explicitly and briefly.",
-  "- Be concise and factual. Do not pad with filler or repeat the question.",
+  "- Capture every meaningful piece of information present on the page: key facts,",
+  "  numbers, names, dates, prices, code, URLs, claims, steps, options, definitions, etc.",
+  "- Do not invent, assume, or add information that is not on the page. If the page",
+  "  has no usable content, say so briefly.",
+  "- Be concise and factual. Omit filler, navigation chrome, boilerplate, and repetition.",
   "- Preserve specific details that matter: numbers, names, dates, prices, code, URLs.",
-  "- Quote or paraphrase the relevant snippets rather than summarizing vaguely.",
   "- Preserve code blocks, tables, or lists when they are directly relevant.",
-  "- Use markdown formatting when it aids clarity.",
-  "- Do not mention that you were given page content or that you are a subagent — just answer.",
+  "- Use markdown formatting (headings, lists, tables) when it aids clarity.",
+  "- Structure the summary so it is easy to scan.",
+  "- Do not mention that you were given page content or that you are a subagent —",
+  "  just return the summary.",
 ].join("\n");
+
+/** Instruction appended to the page content in the user message. */
+const SUMMARY_INSTRUCTION = "Summarize all the useful information on this page.";
 
 // ---------------------------------------------------------------------------
 // Coercion helpers (config file is arbitrary JSON)
@@ -195,7 +202,7 @@ export function reloadConfig(): void {
 /** Human-readable config summary for the /browse command.
  *
  *  `currentModel` (the active session model, from ctx.model) is shown so the
- *  user knows what query mode will use when no explicit provider/model is
+ *  user knows what summary mode will use when no explicit provider/model is
  *  configured — by default the subagent reuses the current Pi model and its
  *  already-configured auth, so no separate API key setup is needed. */
 export function configSummary(
@@ -222,9 +229,9 @@ export function configSummary(
     ``,
     `Config file: ${configPath()}`,
     ``,
-    "When visit_page is called with a `query`, the page content is sent to this",
-    "model and only its answer is returned to the chat context (the full page",
-    "markdown is discarded). Without a `query`, visit_page behaves as before.",
+    "When visit_page is called with `summary: true`, the page content is sent to this",
+    "model and only its concise summary is returned to the chat context (the full",
+    "page markdown is discarded). Without `summary`, visit_page returns the raw page.",
     ``,
     "By default the subagent reuses your current Pi model (shown above) with its",
     "already-configured auth — no API keys to set up. To pin a different model:",
@@ -240,11 +247,11 @@ export function configSummary(
 /**
  * Truncate page content so the subagent request fits within the model's
  * context window. Tokens are estimated at 4 chars each (rough but safe).
- * Room is reserved for the system prompt, the query, and max output tokens.
+ * Room is reserved for the system prompt, the summary instruction, and max
+ * output tokens.
  */
 export function truncateForContext(
   content: string,
-  query: string,
   model: SubagentModel,
   maxTokens: number,
 ): { content: string; truncated: boolean; originalChars: number } {
@@ -252,7 +259,7 @@ export function truncateForContext(
   const TOKEN_CHARS = 4;
   const reservedTokens =
     Math.ceil(SUBAGENT_SYSTEM_PROMPT.length / TOKEN_CHARS) +
-    Math.ceil(query.length / TOKEN_CHARS) +
+    Math.ceil(SUMMARY_INSTRUCTION.length / TOKEN_CHARS) +
     maxTokens +
     500; // safety buffer for URL, wrappers, message overhead
   const availableTokens = Math.max(0, model.contextWindow - reservedTokens);
@@ -278,12 +285,12 @@ export interface ChatMessage {
 }
 
 /** Build the OpenAI chat-completions messages for the subagent call. */
-export function buildMessages(url: string, content: string, query: string): ChatMessage[] {
+export function buildMessages(url: string, content: string): ChatMessage[] {
   const userContent =
     `URL: ${url}\n\n` +
     `PAGE CONTENT (markdown):\n` +
     `---\n${content}\n---\n\n` +
-    `Question: ${query}`;
+    SUMMARY_INSTRUCTION;
   return [
     { role: "system", content: SUBAGENT_SYSTEM_PROMPT },
     { role: "user", content: userContent },
@@ -366,7 +373,7 @@ export function buildReasoningParams(
 // ---------------------------------------------------------------------------
 
 /**
- * Call the subagent model with the page content + query and return its answer.
+ * Call the subagent model with the page content and return its summary.
  *
  * Makes a direct OpenAI-compatible POST to `${baseUrl}/chat/completions`.
  * The configured model's baseUrl must therefore be OpenAI-compatible (this is
@@ -380,13 +387,12 @@ export async function callSubagentModel(
   headers: Record<string, string> | undefined,
   url: string,
   content: string,
-  query: string,
   signal: AbortSignal | undefined,
   reasoningLevel: ReasoningLevel,
   maxTokens: number,
 ): Promise<string> {
   const baseUrl = model.baseUrl.replace(/\/+$/, "");
-  const messages = buildMessages(url, content, query);
+  const messages = buildMessages(url, content);
   const reasoningParams = buildReasoningParams(model, reasoningLevel);
 
   const body: Record<string, unknown> = {

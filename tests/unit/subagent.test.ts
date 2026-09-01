@@ -111,7 +111,7 @@ test("buildReasoningParams: thinkingLevelMap remaps level", () => {
 test("truncateForContext: returns content unchanged when it fits", () => {
   const m = model({ contextWindow: 8000 }); // ~lots of room
   const content = "x".repeat(1000);
-  const out = truncateForContext(content, "what?", m, 2048);
+  const out = truncateForContext(content, m, 2048);
   assert.equal(out.truncated, false);
   assert.equal(out.content, content);
   assert.equal(out.originalChars, 1000);
@@ -121,7 +121,7 @@ test("truncateForContext: truncates when content exceeds context window", () => 
   // Tiny context window forces truncation.
   const m = model({ contextWindow: 500 });
   const content = "x".repeat(10_000);
-  const out = truncateForContext(content, "summarize", m, 256);
+  const out = truncateForContext(content, m, 256);
   assert.equal(out.truncated, true);
   assert.equal(out.originalChars, 10_000);
   assert.ok(out.content.length < 10_000, "truncated content should be smaller");
@@ -135,8 +135,8 @@ test("truncateForContext: reserves room for maxTokens", () => {
   // Same content + context window, but larger maxTokens → less room for content.
   const m = model({ contextWindow: 4000 });
   const content = "y".repeat(20_000);
-  const small = truncateForContext(content, "q", m, 256);
-  const large = truncateForContext(content, "q", m, 3000);
+  const small = truncateForContext(content, m, 256);
+  const large = truncateForContext(content, m, 3000);
   // Larger maxTokens reservation → smaller available content budget.
   assert.ok(
     large.content.length <= small.content.length,
@@ -145,7 +145,7 @@ test("truncateForContext: reserves room for maxTokens", () => {
 });
 
 test("truncateForContext: empty content passes through untouched", () => {
-  const out = truncateForContext("", "q", model({ contextWindow: 1000 }), 100);
+  const out = truncateForContext("", model({ contextWindow: 1000 }), 100);
   assert.equal(out.truncated, false);
   assert.equal(out.content, "");
   assert.equal(out.originalChars, 0);
@@ -153,21 +153,20 @@ test("truncateForContext: empty content passes through untouched", () => {
 
 // ── buildMessages ─────────────────────────────────────────────────────────
 
-test("buildMessages: produces system + user messages with URL, content, and query", () => {
-  const msgs = buildMessages("https://example.com/page", "Hello world", "What does it say?");
+test("buildMessages: produces system + user messages with URL and content", () => {
+  const msgs = buildMessages("https://example.com/page", "Hello world");
   assert.equal(msgs.length, 2);
   assert.equal(msgs[0].role, "system");
   assert.equal(msgs[0].content, SUBAGENT_SYSTEM_PROMPT);
   assert.equal(msgs[1].role, "user");
   assert.ok(msgs[1].content.includes("https://example.com/page"));
   assert.ok(msgs[1].content.includes("Hello world"));
-  assert.ok(msgs[1].content.includes("What does it say?"));
   assert.ok(msgs[1].content.includes("PAGE CONTENT"));
-  assert.ok(msgs[1].content.includes("Question:"));
+  assert.ok(msgs[1].content.includes("Summarize"));
 });
 
 test("buildMessages: content is wrapped between delimiters", () => {
-  const msgs = buildMessages("https://ex.com", "BODY", "Q");
+  const msgs = buildMessages("https://ex.com", "BODY");
   const user = msgs[1].content;
   const before = user.indexOf("---\n");
   const after = user.indexOf("\n---", before + 1);

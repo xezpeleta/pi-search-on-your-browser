@@ -16,8 +16,8 @@
  *                       Amazon product & search URLs get a dedicated product/listing extractor.
  *                       Google Scholar URLs get a dedicated academic paper extractor.
  *
- *                       Optional `query` parameter: when provided, the full page content is read
- *                       by a configurable subagent model and only its concise answer is returned —
+ *                       Optional `summary` parameter: when `true`, the full page content is read
+ *                       by a configurable subagent model and only a concise summary is returned —
  *                       the raw page markdown never enters the chat context. Configure the subagent
  *                       with /browse. (Mirrors the vision-tool extension's subagent pattern.)
  *
@@ -46,7 +46,7 @@ import {
   type SubagentConfig,
 } from "./src/subagent.js";
 
-type RenderArgs = { query?: string; url?: string; clean?: boolean };
+type RenderArgs = { query?: string; url?: string; clean?: boolean; summary?: boolean };
 type RenderState = { expanded?: boolean; isPartial?: boolean };
 type ToolTheme = {
   fg: (color: string, text: string) => string;
@@ -56,7 +56,7 @@ type ToolTheme = {
 
 /** Footer status indicator for the subagent.
  *  Shows the pinned provider/model when configured, otherwise the current
- *  session model (since query mode reuses it by default). */
+ *  session model (since summary mode reuses it by default). */
 function updateStatus(ctx: {
   ui: { setStatus: (id: string, text: string | undefined) => void };
   model?: { provider: string; id: string } | undefined;
@@ -130,7 +130,7 @@ export default function searchOnYourBrowser(pi: ExtensionAPI) {
         saveConfigFile();
         persistConfig();
         updateStatus(ctx);
-        ctx.ui.notify("Browse subagent disabled. visit_page will return raw page markdown even when a query is given.", "info");
+        ctx.ui.notify("Browse subagent disabled. visit_page will return raw page markdown even when a summary is requested.", "info");
         return;
       }
 
@@ -350,18 +350,18 @@ export default function searchOnYourBrowser(pi: ExtensionAPI) {
     name: "visit_page",
     label: "Visit Page",
     description:
-      "Open a URL in your visible Chrome browser and return the rendered page as Markdown. Works with authenticated sites, paywalls, and JavaScript-heavy pages. X (Twitter) URLs (search, profile, or tweet) are extracted as structured tweets with handle, timestamp, permalink, and engagement. Reddit post URLs are extracted as the post plus threaded comments with author, score, and OP marking. Amazon product pages are extracted as structured product data (title, price, availability, brand, rating, features, tech specs, ASIN) and Amazon search URLs as a clean product listing. Google Scholar search URLs are extracted as structured paper results (title, authors, venue, year, citation count, snippet, PDF link). Pass an optional `query` to have a configurable subagent model read THAT page and return only a concise answer — the raw page markdown is NOT added to your chat context, which keeps large pages from filling it. `query` is NOT a web search or site-wide search and does NOT replace google_search: it only answers from the single page at the URL you pass. Use google_search to find pages, then visit_page + query to extract specific facts from one. Configure the subagent with /browse.",
+      "Open a URL in your visible Chrome browser and return the rendered page as Markdown. Works with authenticated sites, paywalls, and JavaScript-heavy pages. X (Twitter) URLs (search, profile, or tweet) are extracted as structured tweets with handle, timestamp, permalink, and engagement. Reddit post URLs are extracted as the post plus threaded comments with author, score, and OP marking. Amazon product pages are extracted as structured product data (title, price, availability, brand, rating, features, tech specs, ASIN) and Amazon search URLs as a clean product listing. Google Scholar search URLs are extracted as structured paper results (title, authors, venue, year, citation count, snippet, PDF link). Pass `summary: true` to have a configurable subagent model read the page and return only a concise summary of ALL the information on it — the raw page markdown is NOT added to your chat context, which keeps large pages from filling it. Configure the subagent with /browse.",
     promptSnippet:
-      "visit_page: visit a URL in your visible browser, returns rendered markdown (X/Twitter URLs yield structured tweets; Reddit posts yield post + threaded comments; Amazon products yield structured product data; Google Scholar yields structured paper results). Pass an optional `query` to get only a concise subagent answer about THAT page instead of the full page markdown (keeps context small). `query` is NOT a site/web search and NOT a replacement for google_search — it only reads the one URL you pass; to find pages use google_search first. Configure via /browse.",
+      "visit_page: visit a URL in your visible browser, returns rendered markdown (X/Twitter URLs yield structured tweets; Reddit posts yield post + threaded comments; Amazon products yield structured product data; Google Scholar yields structured paper results). Pass `summary: true` to get only a concise subagent summary of the page instead of the full page markdown (keeps context small). Configure via /browse.",
     promptGuidelines: [
       "Use visit_page to read a web page you found via google_search. It opens in your visible Chrome so authenticated/paywalled sites work.",
       "For X (Twitter) URLs — search results, profiles, or individual tweets — visit_page extracts structured tweets (handle, text, timestamp, permalink, engagement). Search X by visiting https://x.com/search?q=<query>&f=top (or &f=live for latest).",
       "For Reddit post URLs (any reddit.com .../comments/... link) visit_page extracts the post (title, author, score, body) plus threaded comments (author, score, OP marking, depth-indented replies). Subreddit listings and user pages use the generic extractor.",
       "For Amazon product pages (any amazon.* /dp/ASIN, /gp/product/ASIN URL) visit_page extracts structured product data: title, price, list price, availability, brand, rating, review count, feature bullets, technical specifications, and ASIN. For Amazon search URLs (amazon.* /s?k=...) it returns a clean listing of products with title, price, rating, ASIN, and link. Other Amazon pages (category, seller, etc.) use the generic extractor.",
       "For Google Scholar URLs (scholar.google.com/scholar?q=...) visit_page extracts structured paper results: title, authors/venue/year, citation count, abstract snippet, and PDF link. Scholar paginates 10 results per page; for more, visit_page the next page URL (add &start=10, &start=20, etc.).",
-      "visit_page accepts an optional `query` — but it is NOT a web search, NOT a site-wide search, and NOT a replacement for google_search. `query` only reads the single page at the URL you pass to visit_page and answers a question about that page's content; it cannot find other pages or search a whole site. To discover pages, use google_search first, then visit_page + query to pull specific facts from one of them. When you only need specific information from a (large) page, pass a focused `query` and only the subagent's concise answer is returned to your context instead of the full page markdown — this keeps the conversation compact. The subagent reuses your current Pi model by default (no setup needed); pin a different one with /browse. Prefer a query when a page is likely large and you need just a fact or two. Avoid `query` when you need verbatim text (code snippets, API signatures, exact numbers, error messages) since the subagent paraphrases; when the page is already small; when you need to judge the content yourself; or when the page content is the deliverable.",
+      "visit_page accepts a `summary` flag. Pass `summary: true` and the full page content is read by a subagent model that returns only a concise summary of ALL the information on the page — the raw page markdown never enters your chat context. This keeps large pages (docs, articles, product pages) from filling the conversation. The subagent reuses your current Pi model by default (no setup needed); pin a different one with /browse. Prefer `summary` for large pages where you do not need every word verbatim. Avoid `summary` when you need verbatim text (code snippets, API signatures, exact numbers, error messages) since the subagent paraphrases; when the page is already small; or when the page content itself is the deliverable.",
       "visit_page accepts a `clean` flag. For articles, docs, or blog posts, pass `clean: true` to extract only the main article content as clean Markdown (drops nav/sidebars/ads/footer) — far fewer tokens. No effect on X/Reddit/Amazon/Scholar (already clean). Falls back to the generic extractor if Defuddle fails. Avoid `clean` on non-article pages (dashboards, indexes with no clear main content) where Defuddle may extract the wrong block or nothing. Note: `clean` preserves content links (article URLs, citations, story links) but drops chrome links (nav bars, sidebars, footers, action buttons) — so it's fine for gathering content links, but avoid it if you specifically need nav/footer links (e.g. finding the 'About' or 'Contact' page URL).",
-      "For research tasks — reading multiple papers, articles, or docs — use `clean: true` + `query` together by default. `clean` gives the subagent pure article text (no nav noise, no 90KB truncation) so its answer is faster and more reliable; `query` keeps each page's full content out of your context. This combination is the optimal pattern for intensive research: search → visit each result with clean+query → synthesize from the concise summaries.",
+      "For research tasks — reading multiple papers, articles, or docs — use `clean: true` + `summary: true` together by default. `clean` gives the subagent pure article text (no nav noise, no 90KB truncation) so its summary is faster and more reliable; `summary` keeps each page's full content out of your context. This combination is the optimal pattern for intensive research: search → visit each result with clean+summary → synthesize from the concise summaries.",
     ],
     parameters: Type.Object({
       url: Type.String({ description: "Full URL to visit" }),
@@ -371,15 +371,15 @@ export default function searchOnYourBrowser(pi: ExtensionAPI) {
             "Extract only the page's main article content as clean Markdown (via Defuddle) instead of the default block-walker. Drops navigation, sidebars, ads, footers, and the visible-links dump — far fewer tokens. Best for articles, docs, blog posts. No effect on X/Reddit/Amazon/Scholar (already clean). Falls back to the generic extractor if Defuddle fails. Avoid on non-article pages (dashboards, indexes) where there is no clear main content. Preserves content links (article URLs, citations) but drops chrome links (nav/footer/action buttons).",
         }),
       ),
-      query: Type.Optional(
-        Type.String({
+      summary: Type.Optional(
+        Type.Boolean({
           description:
-            "Optional question about the page at the given URL. NOT a web search or site-wide search, and NOT a replacement for google_search — it only reads the single page you are visiting and answers from its content; it cannot search a site or the web. To find pages, use google_search. When provided, the page content is read by a subagent model and only its concise answer is returned — the raw page markdown is NOT added to your chat context. Use this when you need specific information from a large page and want to keep the conversation compact. The subagent reuses your current Pi model by default; pin a different one with /browse. Combine with `clean: true` for articles (gives the subagent clean text, avoiding nav noise and truncation). Avoid when you need verbatim text (code, API signatures, exact numbers) since the subagent paraphrases, or when the page is already small.",
+            "When true, the full page content is read by a subagent model that returns only a concise summary of ALL the information on the page — the raw page markdown is NOT added to your chat context. Use this for large pages to keep the conversation compact. The subagent reuses your current Pi model by default; pin a different one with /browse. Combine with `clean: true` for articles (gives the subagent clean text, avoiding nav noise and truncation). Avoid when you need verbatim text (code, API signatures, exact numbers) since the subagent paraphrases, or when the page is already small.",
         }),
       ),
     }),
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
-      const { url, query, clean } = params;
+      const { url, clean, summary } = params;
       if (!url || !url.trim()) {
         return {
           content: [{ type: "text" as const, text: "Tool error: visit_page requires a URL." }],
@@ -397,16 +397,16 @@ export default function searchOnYourBrowser(pi: ExtensionAPI) {
         };
       }
 
-      const userQuery = query && query.trim() ? query.trim() : null;
+      const summarize = summary === true;
 
-      // ── Query mode: resolve the subagent BEFORE fetching ────────────────
+      // ── Summary mode: resolve the subagent BEFORE fetching ────────────────
       // Resolves config/model/auth up front so a misconfigured subagent does
       // not waste a browser navigation. Mirrors the vision tool's checks.
       let subModel: Parameters<typeof callSubagentModel>[0] | undefined;
       let subApiKey: string | undefined;
       let subHeaders: Record<string, string> | undefined;
 
-      if (userQuery) {
+      if (summarize) {
         if (!config.enabled) {
           return {
             content: [
@@ -525,18 +525,18 @@ export default function searchOnYourBrowser(pi: ExtensionAPI) {
         };
       }
 
-      // ── No query → return full page markdown (existing behavior) ─────────
-      if (!userQuery) {
+      // ── No summary → return full page markdown (existing behavior) ───────
+      if (!summarize) {
         return {
           content: [{ type: "text" as const, text: result.markdown }],
           details: { url: result.url, elapsed: `${fetchElapsed}s`, chars: result.markdown.length, clean: clean === true },
         };
       }
 
-      // ── Query mode → delegate to the subagent ───────────────────────────
-      // Only the subagent's answer enters the chat context; the full page
+      // ── Summary mode → delegate to the subagent ──────────────────────────
+      // Only the subagent's summary enters the chat context; the full page
       // markdown is consumed by the subagent and discarded.
-      // subModel is guaranteed set here (query mode passed the precheck above).
+      // subModel is guaranteed set here (summary mode passed the precheck above).
       const model = subModel!;
       const modelLabel = `${model.provider}/${model.id}`;
       if (!result.markdown.trim()) {
@@ -544,7 +544,7 @@ export default function searchOnYourBrowser(pi: ExtensionAPI) {
           content: [
             {
               type: "text" as const,
-              text: "Page fetched but no content was extracted, so the subagent has nothing to answer from.",
+              text: "Page fetched but no content was extracted, so the subagent has nothing to summarize.",
             },
           ],
           details: {
@@ -552,14 +552,12 @@ export default function searchOnYourBrowser(pi: ExtensionAPI) {
             summarized: true,
             originalChars: 0,
             model: modelLabel,
-            query: userQuery,
           },
         };
       }
 
       const { content: fitContent, truncated, originalChars } = truncateForContext(
         result.markdown,
-        userQuery,
         model,
         config.maxTokens,
       );
@@ -568,7 +566,7 @@ export default function searchOnYourBrowser(pi: ExtensionAPI) {
         content: [
           {
             type: "text",
-            text: `Page fetched (${originalChars.toLocaleString()} chars in ${fetchElapsed}s). Asking ${model.id}…`,
+            text: `Page fetched (${originalChars.toLocaleString()} chars in ${fetchElapsed}s). Asking ${model.id} to summarize…`,
           },
         ],
       });
@@ -591,7 +589,6 @@ export default function searchOnYourBrowser(pi: ExtensionAPI) {
           subHeaders,
           result.url,
           fitContent,
-          userQuery,
           signal,
           config.defaultReasoningEffort,
           config.maxTokens,
@@ -607,7 +604,6 @@ export default function searchOnYourBrowser(pi: ExtensionAPI) {
             summarized: true,
             originalChars,
             model: modelLabel,
-            query: userQuery,
             truncated,
           },
         };
@@ -622,7 +618,6 @@ export default function searchOnYourBrowser(pi: ExtensionAPI) {
             summarized: true,
             originalChars,
             model: modelLabel,
-            query: userQuery,
             error: "subagent_call_error",
           },
           isError: true,
@@ -645,11 +640,7 @@ export default function searchOnYourBrowser(pi: ExtensionAPI) {
       const head = `${theme.fg("toolTitle", theme.bold("visit_page"))} ${theme.fg("accent", hostname)}`;
       const tags: string[] = [];
       if (args.clean) tags.push(theme.fg("dim", "clean"));
-      if (args.query && args.query.trim()) {
-        const q = args.query.slice(0, 60);
-        const trunc = q.length < args.query.length ? "..." : "";
-        tags.push(theme.fg("dim", `query: ${q}${trunc}`));
-      }
+      if (args.summary) tags.push(theme.fg("dim", "summary"));
       return new Text(tags.length ? `${head}\n  ${tags.join("  ")}` : head, 0, 0);
     },
 
@@ -670,7 +661,6 @@ export default function searchOnYourBrowser(pi: ExtensionAPI) {
         summarized?: boolean;
         originalChars?: number;
         model?: string;
-        query?: string;
         clean?: boolean;
         httpStatus?: number;
         truncated?: boolean;

@@ -7,7 +7,7 @@ Search Google and browse the web in your **own visible Chrome browser** — no A
 - **Google search** via your real browser — returns compact markdown links + snippets
 - **`visit_page`** fetches any URL as markdown using your visible Chrome (authenticated everywhere — paywalled sites, X, Reddit, Amazon, GitHub)
 - **`clean` extraction** — reader-mode markdown via [Defuddle](https://github.com/kepano/defuddle) (the Obsidian Web Clipper library); drops nav/sidebars/ads, ~47% fewer tokens on docs pages
-- **`query` subagent** — pass a question, get only the concise answer back (the full page never enters your chat context); reuses your current Pi model by default, **no setup needed**
+- **`summary` subagent** — pass `summary: true`, get only a concise summary of the whole page back (the full page never enters your chat context); reuses your current Pi model by default, **no setup needed**
 - **HTTP error detection** — dead links return a clear `isError` with status-specific hints instead of error-page gibberish
 - **Site-specific extractors** — X/Twitter (structured tweets), Reddit (posts + threaded comments), Amazon (products + search), Google Scholar (papers)
 - **Zero API keys, zero runtime npm dependencies** — uses your existing browser; nothing to sign up for
@@ -35,7 +35,7 @@ pi install npm:pi-search-on-your-browser
 Or from git:
 
 ```bash
-pi install git:github.com/xezpeleta/pi-search-on-your-browser@v0.7.0
+pi install git:github.com/xezpeleta/pi-search-on-your-browser@v0.8.0
 ```
 
 ## Tools
@@ -52,12 +52,12 @@ google_search({ query: "TypeScript 5.7 release notes" })
 
 Visit any URL and get the page content as markdown. Two optional parameters keep large pages from filling your conversation:
 
-- **`query`** — delegate to a subagent model that returns only a concise answer (the raw page never enters your context; reuses your current model by default). [See below.](#optional-query--keep-your-chat-context-small)
+- **`summary`** — delegate to a subagent model that returns only a concise summary of the whole page (the raw page never enters your context; reuses your current model by default). [See below.](#optional-summary--keep-your-chat-context-small)
 - **`clean`** — extract with Defuddle reader-mode (drops nav/sidebars/ads; ~47% fewer tokens). [See below.](#optional-clean--clean-article-markdown-via-defuddle)
 
 ```
 visit_page({ url: "https://example.com/article" })
-visit_page({ url: "https://react.dev/reference/react/useState", query: "What is the return shape of useState?" })
+visit_page({ url: "https://react.dev/reference/react/useState", summary: true })
 visit_page({ url: "https://react.dev/reference/react/useState", clean: true })
 ```
 
@@ -113,33 +113,34 @@ fois" / "Citado por 1108" / "Zitiert von 1108").
 visit_page({ url: "https://scholar.google.com/scholar?q=transformer+attention+is+all+you+need" })
 ```
 
-### Optional `query` — keep your chat context small
+### Optional `summary` — keep your chat context small
 
 By default, `visit_page` returns the full rendered page as markdown. For large
 pages this can dump tens of thousands of characters into your conversation.
-Pass an optional **`query`** and the full page content is instead read by a
+Pass **`summary: true`** and the full page content is instead read by a
 configurable **subagent model** (a separate, cheap LLM call) that returns only
-the concise answer. The raw page markdown never enters your chat context —
-only the subagent's answer does.
+a concise summary of *all* the information on the page. The raw page markdown
+never enters your chat context — only the subagent's summary does.
 
 ```
 visit_page({
   url: "https://react.dev/reference/react/useState",
-  query: "What is the exact return value shape of useState?",
+  summary: true,
 })
 ```
 
-- **`query` is not a search** — it only reads the single page at the `url` you
-  pass to `visit_page`. It does not search a whole site or the web, and it is
+- **`summary` summarizes the page** — it reads the single page at the `url`
+  you pass to `visit_page` and returns a concise summary of everything on it.
+  It is not a search: it does not look at other pages or the web, and it is
   not a replacement for `google_search`. Use `google_search` to find pages,
-  then `visit_page` + `query` to pull specific facts from one of them.
+  then `visit_page` + `summary` to get a compact digest of one of them.
 - The page is fetched exactly as usual (your visible Chrome, all the
   site-specific extractors above still run); only the *return value* changes.
 - The subagent **reuses your current Pi model by default** (no API keys to
   set up — Pi's already-configured auth is used). Pin a different model with
   `/browse` if you want a cheaper/faster one for summarization.
 - The footer shows a `🌐 model` indicator (the current or pinned model) and an
-  animated spinner while the subagent is answering.
+  animated spinner while the subagent is summarizing.
 - The collapsed tool result shows the context savings, e.g.
   `→ 92,340→1,187 chars · openai/gpt-4o-mini · 3.2s · react.dev`.
 
@@ -169,9 +170,9 @@ visit_page({
   use purpose-built extractors that produce clean compact Markdown.
 - If Defuddle fails or returns nothing (e.g. on a SPA with no article content),
   it automatically falls back to the generic extractor in the same page load.
-- Combine with `query` for the best of both: `clean: true` gives the subagent
-  clean article text to read, and `query` returns only its concise answer —
-  ideal for large articles where you need just a fact or two.
+- Combine with `summary` for the best of both: `clean: true` gives the subagent
+  clean article text to read, and `summary` returns only its concise digest —
+  ideal for large articles.
 
 The Defuddle bundle (~500 KB, MIT-licensed, with Turndown bundled in) is
 vendored at `src/vendor/defuddle-browser.js` and injected into the page via a
@@ -182,7 +183,7 @@ single CDP `Runtime.evaluate` call before the extraction driver runs. See
 visit_page({
   url: "https://react.dev/reference/react/useState",
   clean: true,
-  query: "What is the exact return value shape of useState?",
+  summary: true,
 })
 ```
 
@@ -237,23 +238,23 @@ current flags. Restarting your Pi session also works.
 
 ### `/browse` — subagent configuration
 
-`visit_page`'s `query` mode uses a **subagent model** to read the page and
-return only a concise answer, keeping your chat context small. The subagent
+`visit_page`'s `summary` mode uses a **subagent model** to read the page and
+return only a concise summary, keeping your chat context small. The subagent
 is a normal model from your Pi model registry (the same providers/models you
 already use), called via its OpenAI-compatible API using **Pi's already-
 configured auth** — no separate API keys to set up.
 
 **By default the subagent reuses your current session model** (the one you're
-chatting with). So `query` mode works with zero configuration. Use `/browse`
+chatting with). So `summary` mode works with zero configuration. Use `/browse`
 only if you want to pin a different (e.g. cheaper/faster) model:
 
 ```
 /browse                          # show current config
 /browse on                       # enable (default)
-/browse off                      # disable (query → error until re-enabled)
+/browse off                      # disable (summary → error until re-enabled)
 /browse provider openai          # pin a provider (overrides current model)
 /browse model gpt-4o-mini        # pin a model (overrides current model)
-/browse max-tokens 2048          # max output tokens for the answer
+/browse max-tokens 2048          # max output tokens for the summary
 /browse reasoning-effort low     # off|minimal|low|medium|high|xhigh
 /browse clear                    # unpin → back to current model
 ```
@@ -276,7 +277,7 @@ startup; the config file wins over these once set):
 |---|---|---|
 | `PI_BROWSE_PROVIDER` | — | pin a subagent provider (else: current model) |
 | `PI_BROWSE_MODEL` | — | pin a subagent model (else: current model) |
-| `PI_BROWSE_MAX_TOKENS` | `2048` | max output tokens for the answer |
+| `PI_BROWSE_MAX_TOKENS` | `2048` | max output tokens for the summary |
 | `PI_BROWSE_REASONING_EFFORT` | `off` | thinking level for reasoning models |
 
 ## Requirements
@@ -303,7 +304,7 @@ Four layers of tests (58 total):
 - **`tests/unit/urls.test.ts`** — table-driven tests for the URL classifiers (`isXUrl`, `isRedditPostUrl`, `isAmazonProductUrl`, `isAmazonSearchUrl`, `isScholarSearchUrl`).
 - **`tests/unit/extractors-parse.test.ts`** — validates every extractor JS string (`X_EXTRACT_JS`, `REDDIT_EXTRACT_JS`, etc.) parses as valid JavaScript via `new Function()`. Catches template-literal escaping bugs (the `\n` vs real-newline class of errors) without a browser.
 - **`tests/unit/cdp-client.test.ts`** — tests `runInPageSession` (the navigate/waitForSelector/scroll/extract logic) against a fake `CDPLike` implementation. Includes the **regression test for the v0.5.1 bug**: `cdp.evaluate()` stringifies return values, so `String(false)` → `"false"` (truthy); the test asserts `waitForSelector` does *not* break on the first poll when the selector is absent. Also tests the `fallbackJs` path (Defuddle → generic extractor fallback), HTTP error detection (4xx/5xx → `__HTTP_ERROR__` marker, extraction skipped, no fallback), and the vendored Defuddle bundle (non-empty, UMD, no Node-only deps, cached).
-- **`tests/unit/subagent.test.ts`** — tests the subagent layer used by `visit_page`'s `query` mode: config load/save/resolve, reasoning-level validation, reasoning-param building (mirrors the vision tool), context-window truncation with token-budget reservation, and message construction. No network calls — `callSubagentModel` is exercised indirectly via its pure helpers.
+- **`tests/unit/subagent.test.ts`** — tests the subagent layer used by `visit_page`'s `summary` mode: config load/save/resolve, reasoning-level validation, reasoning-param building (mirrors the vision tool), context-window truncation with token-budget reservation, and message construction. No network calls — `callSubagentModel` is exercised indirectly via its pure helpers.
 
 ### Type-checking
 
@@ -329,6 +330,10 @@ The project uses `node:test` + `node:assert/strict` (built into Node.js) and nat
 | Dependencies | Zero npm deps (just Node.js built-ins) | Zero deps (just POSIX) |
 
 ## Changelog
+
+### v0.8.0
+
+- **Breaking: replaced `visit_page`'s `query` parameter with a `summary` boolean.** The `query` parameter caused recurring confusion — agents kept treating it as a search tool, asking pages questions about information they didn't contain (expecting them to search a site or replace `google_search`). It has been removed and replaced with `summary: true`, which has unambiguous semantics: the subagent reads the page and returns a concise summary of *all* the information on it (consuming far fewer tokens than the full page markdown, while still surfacing everything available). The subagent system prompt was rewritten from "answer this question" to "summarize all the useful information on this page". `buildMessages`, `truncateForContext`, and `callSubagentModel` no longer take a `query` argument; the `query` field was dropped from tool result `details`. Updated all agent-facing surfaces (tool `description`, `promptSnippet`, `promptGuidelines`, the `summary` parameter's own `description`), the `/browse` command messages, and the README. Tests updated to the new signatures. Migration: replace `visit_page({ url, query: "..." })` with `visit_page({ url, summary: true })`.
 
 ### v0.7.6
 
